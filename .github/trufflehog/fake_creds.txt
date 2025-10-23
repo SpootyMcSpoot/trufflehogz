@@ -1,0 +1,85 @@
+# secrets_fixture.txt — FAKE TEST DATA ONLY
+
+# --- AWS ---
+AWS_ACCESS_KEY_ID=AKIA1234567890ABCD12
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# --- GitHub PAT ---
+GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB
+
+# --- Slack tokens ---
+SLACK_BOT_TOKEN=xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx
+SLACK_USER_TOKEN=xoxp-123456789012-123456789012-123456789012-abcdefghijklmnopqr
+
+# --- Stripe ---
+STRIPE_SECRET_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc
+STRIPE_PUBLISHABLE_KEY=pk_test_TYooMQauvdEDq54NiTphI7jx
+
+# --- Twilio ---
+TWILIO_ACCOUNT_SID=AC00000000000000000000000000000000
+TWILIO_AUTH_TOKEN=00000000000000000000000000000000
+
+# --- SendGrid ---
+SENDGRID_API_KEY=SG.xxxxxxxxxxxxxxxxxxxxxxxx.yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+
+# --- Mailchimp ---
+MAILCHIMP_API_KEY=0123456789abcdef0123456789abcdef-us1
+
+# --- Azure Storage ---
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=fakestorageacct;AccountKey=ZHVtbXlCYXNlNjRLZXk9PQ==;EndpointSuffix=core.windows.net
+
+# --- Google API key (dummy format) ---
+GOOGLE_API_KEY=AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+# --- Database URLs ---
+DATABASE_URL=postgres://test_user:SuperSecretP@ssw0rd!@db.example.com:5432/appdb
+MYSQL_URL=mysql://app:app_password@mysql.example.com:3306/app
+
+# --- JWT (example from RFC/Docs, not valid) ---
+JWT_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\
+eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.\
+SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+
+# --- SSH private key (truncated dummy) ---
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAlwAAAAdzc2gtcn
+NhAAAAAwEAAQAAAIEA1DUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMY
+DUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMY=
+-----END OPENSSH PRIVATE KEY-----
+
+# --- Generic PEM private key (truncated dummy) ---
+-----BEGIN PRIVATE KEY-----
+MIICeAIBADANBgkqhkiG9w0BAQEFAASCAmIwggJeAgEAAoGBANEXAMPLEDUMMYBASE64
+DUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMYDUMMY
+-----END PRIVATE KEY-----
+
+# --- GCP service account JSON (fake) ---
+{
+  "type": "service_account",
+  "project_id": "example-project",
+  "private_key_id": "0000000000000000000000000000000000000000",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIBFAKEBASE64...==\n-----END PRIVATE KEY-----\n",
+  "client_email": "svc-account@example-project.iam.gserviceaccount.com",
+  "client_id": "000000000000000000000",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token"
+}
+
+# --- Kubernetes bearer token (JWT-like) ---
+KUBE_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.\
+eyJzY29wZSI6ImZha2UifQ.\
+dummydummydummydummydummydummydummydummy
+
+# --- Docker config auth (fake base64 user:pass) ---
+DOCKER_AUTH=eyJhdXRocyI6eyJnaHJiLmlvIjp7ImF1dGgiOiJiYXNlNjR1c2VyOnBhc3MifX19
+
+# --- Kubernetes kubeconfig token field (fake) ---
+users:
+- name: test
+  user:
+    token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.dummy.payload.signature
+
+# --- Generic passwords & secrets ---
+SECRET_KEY_BASE=2b1d8f1c2e3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c
+API_SECRET=supersecretvalue1234567890
+PASSWORD=hunter2

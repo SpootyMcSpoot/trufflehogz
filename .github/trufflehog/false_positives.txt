@@ -1,0 +1,20 @@
+# Newline-delimited regexes. Lines starting with # are comments.
+# These patterns are matched against a composed check string:
+# detector=... | verified=... | repo=... | file=... | redacted=...
+# Keep them specific to avoid missing true positives.
+
+# Example Postgres DSN from docs and READMEs (wildcard DB name)
+postgres:\/\/username:password@hostname:\d+\/[^\/\s]+
+
+# Common placeholder tokens that are not real secrets
+\bexample(_|-)?(user|username|token|password|pass|key)\b
+\busername:password@hostname\b
+\bchangeme\b
+\bplaceholder\b
+
+# Docs-only areas (avoid if you actually want to scan docs):
+# Note: these match the composed "file=" field, not the raw path.
+# file=.*\/docs\/
+# file=.*\/doc\/
+# file=.*\/examples?\/
+# file=.*README(\.md|\.rst)?$
