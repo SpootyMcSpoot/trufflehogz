@@ -296,6 +296,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          mkdir -p "diag-${ORG}"
           : > "findings-${ORG}.ndjson"
           : > "errors-${ORG}.ndjson"
           : > "diag-${ORG}/SCAN_SUMMARY.txt"
