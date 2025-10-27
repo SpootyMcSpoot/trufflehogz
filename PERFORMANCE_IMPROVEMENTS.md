@@ -1,6 +1,6 @@
 # Performance Improvements for Large Organizations
 
-## 🎯 Current Performance Characteristics
+##  Current Performance Characteristics
 
 ### Bottlenecks Identified
 
@@ -21,7 +21,7 @@
 | Large | 500 | 10 | 15-25 min | Parallel limit (256 jobs) |
 | Very Large | 1500+ | 20+ | 30-60+ min | Job concurrency, timeouts |
 
-## 🚀 Recommended Improvements (Priority Order)
+##  Recommended Improvements (Priority Order)
 
 ### 1. **Incremental Scanning** (HIGH IMPACT)
 Scan only changed files since last successful run.
@@ -250,7 +250,7 @@ runs-on: self-hosted-us-east  # Closer to github.com
 
 ---
 
-## 🎯 Quick Wins (Implement First)
+##  Quick Wins (Implement First)
 
 ### Phase 1: Low-Hanging Fruit (1-2 hours)
 1. **Smart branch filtering** (main-recent mode)
@@ -274,7 +274,7 @@ runs-on: self-hosted-us-east  # Closer to github.com
 
 ---
 
-## 📊 Expected Performance After All Improvements
+##  Expected Performance After All Improvements
 
 | Org Size | Repos | Current Time | After Phase 1 | After Phase 2 | After Phase 3 |
 |----------|-------|--------------|---------------|---------------|---------------|
@@ -309,7 +309,7 @@ skip_stale_branches: true
 
 ---
 
-## 🎨 Example: Optimized Configuration for Large Org
+##  Example: Optimized Configuration for Large Org
 
 ```yaml
 # .github/workflows/trufflehog-org-scan.yml
@@ -331,7 +331,7 @@ inputs:
 
 ---
 
-## 📈 Monitoring Recommendations
+##  Monitoring Recommendations
 
 Add these metrics to workflow summary:
 
@@ -349,7 +349,7 @@ echo "| Timeout count | ${TIMEOUT_COUNT} |"
 
 ---
 
-## 🔗 References
+##  References
 
 - TruffleHog `--since-commit` flag: https://github.com/trufflesecurity/trufflehog#git-options
 - GitHub Actions job concurrency limits: https://docs.github.com/en/actions/learn-github-actions/usage-limits
@@ -357,7 +357,7 @@ echo "| Timeout count | ${TIMEOUT_COUNT} |"
 
 ---
 
-## ✅ Action Items
+##  Action Items
 
 **Ready to implement**:
 - [ ] Add `branch_strategy` input with "main-recent" option

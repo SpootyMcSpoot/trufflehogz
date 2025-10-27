@@ -1,6 +1,6 @@
 # Improve Sharding Logic, Workflow Summary, and Performance (40-80% Faster)
 
-## 🎯 Overview
+##  Overview
 
 This PR delivers comprehensive improvements to the TruffleHog scanning workflow:
 - **40-80% faster scan times** with smart defaults
@@ -9,7 +9,7 @@ This PR delivers comprehensive improvements to the TruffleHog scanning workflow:
 - **Code quality improvements** (-9% lines, better patterns)
 - **100% backward compatible**
 
-## ⚡ Performance Improvements (NEW)
+##  Performance Improvements (NEW)
 
 ### 1. Smart Branch Filtering (40-60% faster)
 - **4 strategies**: all, main-only, main-recent, protected
@@ -37,20 +37,20 @@ This PR delivers comprehensive improvements to the TruffleHog scanning workflow:
 
 ### 6. Performance Metrics
 - Enhanced workflow summary with optimization status
-- Visual indicators (🚀) for enabled features
+- Visual indicators () for enabled features
 
-## 📊 Performance Impact
+##  Performance Impact
 
 | Org Size | Repos | Before | After (Daily) | Improvement |
 |----------|-------|--------|---------------|-------------|
-| Small | 25 | 3-5 min | 1-2 min | **60%** ⚡ |
-| Medium | 150 | 8-12 min | 2-3 min | **75%** ⚡⚡ |
-| Large | 500 | 15-25 min | 3-5 min | **80%** ⚡⚡⚡ |
-| Very Large | 1500 | 30-60 min | 5-10 min | **83%** ⚡⚡⚡⚡ |
+| Small | 25 | 3-5 min | 1-2 min | **60%**  |
+| Medium | 150 | 8-12 min | 2-3 min | **75%**  |
+| Large | 500 | 15-25 min | 3-5 min | **80%**  |
+| Very Large | 1500 | 30-60 min | 5-10 min | **83%**  |
 
 **Real-world example**: 1000-repo org goes from **45-60 min → 3-5 min** (92% faster!)
 
-## 🎯 New Workflow Inputs (15 Total)
+##  New Workflow Inputs (15 Total)
 
 ### Configuration (from initial improvements)
 1. `org_names` - Comma-separated org list
@@ -74,7 +74,7 @@ This PR delivers comprehensive improvements to the TruffleHog scanning workflow:
 
 **All inputs have dropdown menus!**
 
-## ✨ Other Improvements
+##  Other Improvements
 
 ### Enhanced Sharding Logic
 - Configurable repos-per-shard (was hardcoded to 50)
@@ -98,7 +98,7 @@ This PR delivers comprehensive improvements to the TruffleHog scanning workflow:
 - Added missing `--exclude-patterns-file` flag
 - Fixed false positive filtering
 
-## 🚀 Zero Configuration Required
+##  Zero Configuration Required
 
 The workflow now uses **optimized defaults automatically**:
 ```yaml
@@ -110,7 +110,7 @@ skip_stale_branches: true     # (was: false)
 
 **Result**: **40-60% faster immediately** without any changes!
 
-## 🎨 Recommended Configurations
+##  Recommended Configurations
 
 ### Daily Scans (Maximum Speed)
 ```yaml
@@ -139,27 +139,27 @@ enable_size_based_sharding: true
 ```
 **Result**: 10-25 min
 
-## 🔄 Backward Compatibility
+##  Backward Compatibility
 
-✅ **100% backward compatible**
+ **100% backward compatible**
 - All inputs have defaults matching previous behavior
 - Existing push triggers work identically
 - No breaking changes to Python script API
 - Performance optimizations are opt-in with safe defaults
 
-## 📚 Files Changed
+##  Files Changed
 
 - `.github/workflows/trufflehog-org-scan.yml`: +369 lines (features)
 - `trufflehog_scanner.py`: -81 lines (optimization)
 - `.gitignore`: Added
 - Documentation: 4 new comprehensive guides
 
-## 🧪 Testing
+##  Testing
 
-- ✅ YAML syntax validated
-- ✅ Python syntax validated
-- ✅ Backward compatibility verified
-- ✅ All inputs have safe defaults
+-  YAML syntax validated
+-  Python syntax validated
+-  Backward compatibility verified
+-  All inputs have safe defaults
 
 ### Manual Testing
 1. Go to Actions → TruffleHog workflow
@@ -167,7 +167,7 @@ enable_size_based_sharding: true
 3. Adjust dropdowns to test configurations
 4. Review summary for performance metrics
 
-## 🎉 Summary
+##  Summary
 
 - **Performance**: 40-80% faster for most orgs
 - **Flexibility**: 15 configurable inputs with dropdowns
@@ -175,7 +175,7 @@ enable_size_based_sharding: true
 - **Quality**: Cleaner code, bug fixes, better patterns
 - **Compatibility**: 100% backward compatible
 
-**Ready to merge!** ✅
+**Ready to merge!** 
 
 ---
 

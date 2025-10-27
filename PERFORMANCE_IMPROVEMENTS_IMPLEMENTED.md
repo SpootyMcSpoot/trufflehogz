@@ -1,8 +1,8 @@
 # Performance Improvements - Implementation Summary
 
-## ✅ Implemented (6 of 10 Recommendations)
+##  Implemented (6 of 10 Recommendations)
 
-### 1. Smart Branch Filtering (HIGH IMPACT) ✅
+### 1. Smart Branch Filtering (HIGH IMPACT) 
 **Lines**: `.github/workflows/trufflehog-org-scan.yml:428-489`
 
 **What it does**:
@@ -28,7 +28,7 @@ skip_stale_branches: true
 
 ---
 
-### 2. Incremental/Time-Based Scanning (HIGH IMPACT) ✅
+### 2. Incremental/Time-Based Scanning (HIGH IMPACT) 
 **Lines**: `.github/workflows/trufflehog-org-scan.yml:522-527`
 
 **What it does**:
@@ -53,7 +53,7 @@ scan_lookback_days: "7"
 
 ---
 
-### 3. Adaptive Timeout Based on Repo Size (MEDIUM IMPACT) ✅
+### 3. Adaptive Timeout Based on Repo Size (MEDIUM IMPACT) 
 **Lines**: `.github/workflows/trufflehog-org-scan.yml:491-507`
 
 **What it does**:
@@ -79,7 +79,7 @@ adaptive_timeout: true
 
 ---
 
-### 4. Early Termination on Timeout (LOW IMPACT) ✅
+### 4. Early Termination on Timeout (LOW IMPACT) 
 **Lines**: `.github/workflows/trufflehog-org-scan.yml:534-555`
 
 **What it does**:
@@ -98,7 +98,7 @@ adaptive_timeout: true
 
 ---
 
-### 5. Repository Size-Based Sharding (MEDIUM IMPACT) ✅
+### 5. Repository Size-Based Sharding (MEDIUM IMPACT) 
 **Lines**: `.github/workflows/trufflehog-org-scan.yml:424-440`
 
 **What it does**:
@@ -136,13 +136,13 @@ enable_size_based_sharding: true
 
 ---
 
-### 6. Performance Metrics in Summary (HIGH VALUE) ✅
+### 6. Performance Metrics in Summary (HIGH VALUE) 
 **Lines**: `.github/workflows/trufflehog-org-scan.yml:773-807`
 
 **What it does**:
 - Enhanced workflow summary with performance section
 - Shows active optimization features
-- Visual indicators (🚀) for enabled optimizations
+- Visual indicators () for enabled optimizations
 - Displays:
   - Branch strategy and lookback days
   - Scan mode and time range
@@ -164,14 +164,14 @@ enable_size_based_sharding: true
 | Adaptive Timeout | true |
 | Size-Based Sharding | false |
 
-> 🚀 **Branch filtering enabled**: Scanning default branch + branches updated in last 30 days
-> 🚀 **Time-based scanning enabled**: Only scanning commits from last 7 days
-> 🚀 **Adaptive timeout enabled**: Smaller repos get shorter timeouts (2-5m), large repos get longer (10-15m)
+>  **Branch filtering enabled**: Scanning default branch + branches updated in last 30 days
+>  **Time-based scanning enabled**: Only scanning commits from last 7 days
+>  **Adaptive timeout enabled**: Smaller repos get shorter timeouts (2-5m), large repos get longer (10-15m)
 ```
 
 ---
 
-## 🚫 Not Implemented (4 of 10 Recommendations)
+##  Not Implemented (4 of 10 Recommendations)
 
 ### 7. Parallel Artifact Upload/Download (MEDIUM IMPACT)
 **Status**: Skipped (complex changes, marginal benefit)
@@ -219,7 +219,7 @@ enable_size_based_sharding: true
 
 ---
 
-## 📊 Expected Performance Improvements
+##  Expected Performance Improvements
 
 ### Conservative Estimates (All Optimizations Enabled)
 
@@ -248,7 +248,7 @@ With optimal settings for recurring scans:
 
 ---
 
-## 🎯 Recommended Configurations
+##  Recommended Configurations
 
 ### Configuration 1: Maximum Speed (Daily Scans)
 **Best for**: Organizations that scan daily
@@ -304,7 +304,7 @@ enable_size_based_sharding: true
 
 ---
 
-## 🔧 Configuration Examples by Org Size
+##  Configuration Examples by Org Size
 
 ### Small Org (< 50 repos)
 ```yaml
@@ -360,7 +360,7 @@ max_repo_size_kb: 500000  # Skip repos > 500MB
 
 ---
 
-## 📈 Monitoring and Tuning
+##  Monitoring and Tuning
 
 ### Key Metrics to Watch
 
@@ -384,7 +384,7 @@ max_repo_size_kb: 500000  # Skip repos > 500MB
 
 ---
 
-## 🎉 Summary of Implementation
+##  Summary of Implementation
 
 ### Total Improvements Shipped
 - **6 major features** implemented
@@ -403,14 +403,14 @@ max_repo_size_kb: 500000  # Skip repos > 500MB
 - **Performance summary**: 35 lines
 
 ### Backward Compatibility
-- ✅ **100% backward compatible**
+-  **100% backward compatible**
 - All new inputs have defaults matching previous behavior
 - Existing workflows continue to work unchanged
 - Performance optimizations are opt-in (except adaptive timeout)
 
 ---
 
-## 🚀 Getting Started
+##  Getting Started
 
 ### Default Behavior (No Changes Required)
 The workflow now defaults to optimized settings:
@@ -432,7 +432,7 @@ No changes needed! Push triggers use optimized defaults automatically.
 
 ---
 
-## 📚 Documentation
+##  Documentation
 
 - Full details: See `PERFORMANCE_IMPROVEMENTS.md`
 - Configuration guide: See this document's "Recommended Configurations" section
@@ -440,7 +440,7 @@ No changes needed! Push triggers use optimized defaults automatically.
 
 ---
 
-## ✅ Testing Checklist
+##  Testing Checklist
 
 Before merging:
 - [x] YAML syntax validated
@@ -455,7 +455,7 @@ Before merging:
 
 ---
 
-## 🔗 References
+##  References
 
 - TruffleHog `--since` flag: https://github.com/trufflesecurity/trufflehog#git-options
 - GitHub Actions matrix: https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs

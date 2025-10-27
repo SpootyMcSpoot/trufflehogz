@@ -1,10 +1,10 @@
 # Improve Sharding Logic, Workflow Summary, and Code Quality
 
-## 🎯 Overview
+##  Overview
 
 This PR enhances the TruffleHog scanning workflow with improved configurability, better sharding logic, comprehensive workflow summaries, and optimized code. All changes maintain backward compatibility while adding powerful new features for testing and production use.
 
-## ✨ Key Improvements
+##  Key Improvements
 
 ### 1. Manual Trigger with Drop-Down Menus
 
@@ -126,7 +126,7 @@ Created comprehensive `.gitignore` for:
 - IDE files (`.vscode/`, `.idea/`)
 - OS files (`.DS_Store`, `Thumbs.db`)
 
-## 📊 Impact Summary
+##  Impact Summary
 
 | Metric | Before | After | Change |
 |--------|--------|-------|--------|
@@ -137,13 +137,13 @@ Created comprehensive `.gitignore` for:
 | Code duplication | High (3x blocks) | Low (1x helper) | -36 lines |
 | NDJSON reading logic | 5 implementations | 1 generator | Consolidated |
 
-## 🧪 Testing
+##  Testing
 
 All changes have been validated:
-- ✅ Python syntax validated (`py_compile`)
-- ✅ YAML syntax validated (`yaml.safe_load`)
-- ✅ Backward compatible (all existing behavior preserved)
-- ✅ Default values match previous hardcoded values
+-  Python syntax validated (`py_compile`)
+-  YAML syntax validated (`yaml.safe_load`)
+-  Backward compatible (all existing behavior preserved)
+-  Default values match previous hardcoded values
 
 ### How to Test Manual Triggers
 
@@ -152,9 +152,9 @@ All changes have been validated:
 3. Select desired options from dropdowns
 4. Click "Run workflow" to test
 
-## 🔄 Backward Compatibility
+##  Backward Compatibility
 
-✅ **100% backward compatible**
+ **100% backward compatible**
 - All inputs have defaults matching previous hardcoded values
 - Existing `push` triggers work identically
 - No breaking changes to Python script API
@@ -185,7 +185,7 @@ per_repo_timeout: 3m
 scan_parallel: 16
 ```
 
-## 🚀 Usage
+##  Usage
 
 ### Automatic (Push)
 Works exactly as before - no changes needed.
@@ -205,13 +205,13 @@ TRUFFLEHOG_ORGS: "org1,org2,org3"
 
 Or use manual trigger with `org_names` input.
 
-## 📚 Files Changed
+##  Files Changed
 
 - `.github/workflows/trufflehog-org-scan.yml`: Enhanced with inputs, sharding, summary
 - `trufflehog_scanner.py`: Optimized with generator pattern, modern Python
 - `.gitignore`: Added for Python/IDE/OS artifacts
 
-## 🎉 Benefits
+##  Benefits
 
 1. **Flexibility**: Tune parameters per run without code changes
 2. **Visibility**: Comprehensive summaries show exactly what ran
@@ -220,7 +220,7 @@ Or use manual trigger with `org_names` input.
 5. **Quality**: Bug fixes ensure correct filtering
 6. **Testing**: Easy to test different configurations via UI
 
-## 🔗 Related
+##  Related
 
 - TruffleHog OSS: https://github.com/trufflesecurity/trufflehog
 - Sharding strategy: Modulo-based deterministic distribution
@@ -228,4 +228,4 @@ Or use manual trigger with `org_names` input.
 
 ---
 
-**Ready to merge** ✅
+**Ready to merge** 
