@@ -6,7 +6,9 @@ A production-ready GitHub Actions workflow that scans multiple organizations for
 
 ## Quick Start
 
-1. **Set up repository secret**: Add `GH_PAT` (GitHub Classic PAT with `repo` + `read:org` scopes)
+1. **Set up repository secret**: Add `GH_PAT` (see [Setup](#setup) for detailed PAT permissions)
+   - Classic PAT: `repo` + `read:org` scopes
+   - Fine-grained PAT: Contents (Read) + Members (Read)
 2. **Configure organizations**: Set repository variable `TRUFFLEHOG_ORGS` (comma-separated list)
 3. **Run workflow**: Go to Actions → TruffleHog – Org Scan → Run workflow
 
@@ -52,9 +54,11 @@ That's it! The workflow uses optimized defaults and runs **40-60% faster** than 
 
 ## Configuration
 
-### Workflow Inputs (15 Total)
+### Workflow Inputs (10 Total)
 
 The workflow accepts the following inputs via the Actions UI (Run workflow button):
+
+**Note**: GitHub Actions limits workflow_dispatch to 10 inputs. Additional settings use optimized defaults hardcoded in the workflow.
 
 #### Basic Configuration
 | Input | Options | Default | Description |
@@ -74,55 +78,64 @@ The workflow accepts the following inputs via the Actions UI (Run workflow butto
 |-------|---------|---------|-------------|
 | `shard_cap` | 5, 10, 15, 20 | 10 | Maximum shards per org |
 | `repos_per_shard` | 25, 50, 75, 100 | 50 | Target repos per shard |
-| `enable_size_based_sharding` | true/false | false | Distribute by repo size |
 
-#### Branch & Time Filtering (Performance)
+#### Performance & Filtering
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
 | `branch_strategy` | all, main-only, main-recent, protected | main-recent | Branch scanning strategy |
-| `branch_lookback_days` | any number | 30 | Days for "recent" branches |
 | `scan_mode` | full, recent, incremental | recent | Commit scanning mode |
-| `scan_lookback_days` | any number | 7 | Days to scan (recent mode) |
-| `adaptive_timeout` | true/false | true | Adjust timeout by repo size |
-| `skip_stale_branches` | true/false | true | Skip 90+ day old branches |
 
 #### Advanced
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
-| `max_repo_size_kb` | any number | 0 | Skip repos larger than KB (0=unlimited) |
 | `trufflehog_version` | version string | 3.90.6 | TruffleHog Docker image version |
 
+### Hardcoded Settings (Optimized Defaults)
+
+These settings are no longer configurable via UI (due to 10-input GitHub Actions limit) but use performance-optimized defaults:
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| `branch_lookback_days` | 30 | Days to look back for "recent" branches |
+| `scan_lookback_days` | 7 | Days to scan in recent/incremental mode |
+| `adaptive_timeout` | true | Automatically adjusts timeout by repo size (2-15m) |
+| `skip_stale_branches` | true | Skips branches not updated in 90+ days |
+| `enable_size_based_sharding` | false | Size-based load balancing (disabled by default) |
+| `max_repo_size_kb` | 0 | Repo size limit in KB (0 = unlimited) |
+
+To change these settings, modify the workflow file directly (.github/workflows/trufflehog-org-scan.yml).
+
 ### Configuration Examples
+
+These examples show how to configure the 10 available workflow inputs for different scanning scenarios.
 
 #### Daily Scans (Maximum Speed)
 ```yaml
 branch_strategy: main-only
 scan_mode: recent
-scan_lookback_days: 1
 scan_parallel: 16
 per_repo_timeout: 3m
 ```
 **Expected runtime**: 2-5 min for most orgs
 
-#### Weekly Scans (Recommended)
+#### Weekly Scans (Recommended - Uses Defaults)
 ```yaml
 branch_strategy: main-recent
 scan_mode: recent
-scan_lookback_days: 7
-adaptive_timeout: true
 scan_parallel: 12
 ```
 **Expected runtime**: 3-10 min for most orgs (RECOMMENDED)
+**Note**: Uses optimized defaults for all other settings
 
 #### Monthly Deep Scans
 ```yaml
 branch_strategy: all
-scan_mode: recent
-scan_lookback_days: 30
-enable_size_based_sharding: true
+scan_mode: full
 per_repo_timeout: 10m
+scan_parallel: 8
 ```
 **Expected runtime**: 10-25 min for most orgs
+**Note**: Scans all branches and full commit history
 
 #### Large Organization (1000+ repos)
 ```yaml
@@ -131,12 +144,10 @@ shard_cap: 20
 scan_parallel: 16
 branch_strategy: main-only
 scan_mode: recent
-scan_lookback_days: 3
-adaptive_timeout: true
-enable_size_based_sharding: true
-max_repo_size_kb: 500000  # Skip repos > 500MB
+per_repo_timeout: 5m
 ```
 **Expected runtime**: 5-12 min
+**Note**: To skip large repos, edit workflow file to change `max_repo_size_kb` from 0
 
 ## Architecture
 
@@ -206,13 +217,107 @@ trufflehog_scanner.py             # Python post-processor (860 lines)
 
 ## Setup
 
-### 1. GitHub PAT (Classic)
-Create a classic PAT with these scopes:
-- `repo` - Read private repositories
-- `read:org` - Read organization membership
-- Optional: `write:issues` - Create issues (if `open_issues: true`)
+### 1. GitHub Personal Access Token (PAT)
 
-Store as repository secret: `GH_PAT`
+You need a GitHub token with appropriate permissions to scan repositories and optionally create issues. GitHub offers two token types:
+
+#### Fine-Grained Personal Access Token (Recommended)
+
+Fine-grained tokens offer better security with granular, time-limited permissions scoped to specific repositories or organizations.
+
+**To create a fine-grained PAT:**
+1. Go to Settings → Developer settings → Personal access tokens → Fine-grained tokens
+2. Click "Generate new token"
+3. Set token name, expiration, and description
+4. Under "Repository access", select:
+   - **"All repositories"** (if scanning all orgs)
+   - OR **"Only select repositories"** (choose specific repos)
+5. Under "Permissions" → "Repository permissions", set:
+
+**Minimum permissions (scanning only):**
+| Permission | Access Level | Purpose |
+|------------|-------------|---------|
+| Contents | **Read** | Access repository code and history |
+| Metadata | **Read** | Access basic repository information (automatic) |
+
+**Additional permissions (for issue creation):**
+| Permission | Access Level | Purpose |
+|------------|-------------|---------|
+| Issues | **Read and write** | Create and manage issues for findings |
+
+**For organization scanning:**
+6. Under "Permissions" → "Organization permissions", set:
+   - **Members**: Read (access to enumerate org repos)
+
+**Important notes for fine-grained tokens:**
+- Tokens are scoped per-organization; you may need multiple tokens for multiple orgs
+- Expiration is required (max 1 year); set a reminder to rotate
+- More secure than classic PATs but requires more setup
+
+#### Classic Personal Access Token (Simpler)
+
+Classic tokens are simpler but have broader permissions and no expiration requirement.
+
+**To create a classic PAT:**
+1. Go to Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. Click "Generate new token (classic)"
+3. Set note (description) and expiration
+4. Select scopes:
+
+**Minimum permissions (scanning only):**
+| Scope | Purpose |
+|-------|---------|
+| `repo` | Full control of private repositories (read access to code) |
+| `read:org` | Read org membership and teams (enumerate repos) |
+
+**Additional permissions (for issue creation):**
+| Scope | Purpose |
+|-------|---------|
+| `repo` already includes issue creation | No additional scope needed |
+
+**Important notes for classic tokens:**
+- `repo` scope is broad (includes read/write for code, issues, PRs, etc.)
+- Consider using fine-grained tokens for better security
+- Set expiration and rotate regularly
+
+#### Comparison: Fine-Grained vs Classic
+
+| Feature | Fine-Grained | Classic |
+|---------|-------------|---------|
+| Security | Better (granular permissions) | Broader (all-or-nothing scopes) |
+| Setup Complexity | More complex | Simpler |
+| Multi-Org Support | Requires token per org | Single token for all orgs |
+| Expiration | Required (max 1 year) | Optional |
+| Recommended For | Production, security-conscious | Quick setup, testing |
+
+#### Storing the Token
+
+After creating either token type, store it as a repository secret:
+
+1. Go to your repository Settings → Secrets and variables → Actions
+2. Click "New repository secret"
+3. Name: **`GH_PAT`**
+4. Value: Paste your token
+5. Click "Add secret"
+
+#### Troubleshooting Token Permissions
+
+**401 Unauthorized errors:**
+- Classic PAT: Ensure `repo` and `read:org` scopes are selected
+- Fine-grained PAT: Ensure "Contents: Read" and "Members: Read" are granted
+- Verify token hasn't expired
+- Check that the user has access to the target organizations
+
+**403 Forbidden errors:**
+- User may not have access to the organization
+- For private orgs, user must be a member
+- Fine-grained token may be scoped to wrong repositories/orgs
+
+**Issues not being created:**
+- Classic PAT: `repo` scope already includes issue creation (no change needed)
+- Fine-grained PAT: Ensure "Issues: Read and write" permission is granted
+- Verify `open_issues: true` is set in workflow input
+- Check that repository has issues enabled
 
 ### 2. Organization Configuration
 
@@ -308,8 +413,8 @@ After each run, you'll see a comprehensive summary:
 ## Issue Creation
 
 ### Behavior
-- **Title**: `[TruffleHog] Weekly secrets report - YYYY-MM-DD`
-- **Deduplication**: Only creates one issue per repo per day
+- **Title**: `[TruffleHog] Secrets scan report - YYYY-MM-DD`
+- **Deduplication**: Checks for existing issues within 7 days to prevent spam
 - **Labels**: Auto-created based on detector type and severity
   - Base: `security`, `secrets`, `tool:trufflehog`, `needs-triage`
   - Detector: `secret:aws`, `secret:github`, `secret:slack`, etc.
@@ -423,9 +528,11 @@ docker run --rm -v "$PWD:/work" -w /work \
 - Ensure `scan_results` includes desired result types
 
 **401/403 errors**
-- Verify `GH_PAT` has correct scopes (`repo`, `read:org`)
+- Classic PAT: Verify `repo` and `read:org` scopes are selected
+- Fine-grained PAT: Verify "Contents: Read" and "Members: Read" permissions
 - Check PAT hasn't expired
 - Confirm user has access to organizations
+- See detailed troubleshooting in [Setup → Troubleshooting Token Permissions](#troubleshooting-token-permissions)
 
 **Timeouts on specific repos**
 - Enable `adaptive_timeout: true`
@@ -444,24 +551,33 @@ docker run --rm -v "$PWD:/work" -w /work \
 
 ## Additional Documentation
 
-- **PR_DESCRIPTION.md**: Complete feature list and improvements
-- **PERFORMANCE_IMPROVEMENTS_IMPLEMENTED.md**: Detailed performance optimization guide
-- **FINAL_SUMMARY.md**: Complete implementation overview
+All comprehensive documentation is consolidated in this README for easier maintenance.
 
 ## Related Resources
 
 - [TruffleHog OSS](https://github.com/trufflesecurity/trufflehog)
 - [GitHub Actions Documentation](https://docs.github.com/en/actions)
-- [GitHub Classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
+- [Creating a Fine-Grained PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
+- [Creating a Classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic)
+- [GitHub Token Scopes](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps)
 
 ## Changelog
 
-### v2.0 (Current)
+### v2.1 (Current)
+- **Comprehensive PAT documentation**: Fine-grained vs Classic tokens with detailed permissions
+- **Bug fixes**:
+  - Fixed 10-input GitHub Actions limit (reduced from 16 inputs)
+  - Fixed missing directory creation causing workflow failures
+  - Improved issue creation robustness with duplicate detection
+- **Added pull_request trigger**: Workflow now runs on PRs
+- **Consolidated documentation**: Single README for easier maintenance
+
+### v2.0
 - **40-80% faster** with smart branch filtering and time-based scanning
-- **15 configurable inputs** (was 2)
+- **10 configurable inputs** (was 2) with 6 optimized hardcoded defaults
 - **Enhanced workflow summary** with performance metrics
-- **Adaptive timeout** based on repo size
-- **Size-based sharding** for better load balancing
+- **Adaptive timeout** based on repo size (hardcoded: enabled)
+- **Size-based sharding** for better load balancing (hardcoded: disabled)
 - **Bug fixes**: False positive filtering, missing flags
 - **Code quality**: -9% lines via generator pattern
 
