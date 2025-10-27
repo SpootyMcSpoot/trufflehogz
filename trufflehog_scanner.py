@@ -385,12 +385,30 @@ class GHClient:
             return None
 
     def search_issue_by_title(self, repo: str, title: str) -> bool:
+        """Search for an open issue by exact title match."""
         q = f'repo:{repo} in:title "{title}" state:open'
         path = f"/search/issues?q={quote_plus(q)}&per_page=1"
         try:
             data = self.call("GET", path, None)
             return bool(data.get("total_count", 0))
-        except HTTPError:
+        except HTTPError as e:
+            logging.warning("Failed to search issues in %s: HTTP %d (may create duplicate)", repo, e.code)
+            return False
+
+    def search_recent_issues(self, repo: str, title_pattern: str, days: int = 7) -> bool:
+        """Search for recent issues matching a title pattern (partial match)."""
+        import datetime
+        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        q = f'repo:{repo} in:title "{title_pattern}" state:open created:>={cutoff_date}'
+        path = f"/search/issues?q={quote_plus(q)}&per_page=5"
+        try:
+            data = self.call("GET", path, None)
+            count = data.get("total_count", 0)
+            if count > 0:
+                logging.info("Found %d recent open issue(s) in %s matching '%s'", count, repo, title_pattern)
+            return count > 0
+        except HTTPError as e:
+            logging.warning("Failed to search recent issues in %s: HTTP %d", repo, e.code)
             return False
 
     def get_labels(self, repo: str) -> List[str]:
@@ -418,13 +436,19 @@ class GHClient:
                     logging.warning("Could not create label %s in %s (HTTP %d)", lbl, repo, e.code)
 
     def create_issue(self, repo: str, title: str, body: str, labels: Optional[List[str]] = None) -> dict:
-        payload: Dict[str, Any] = {"title": title, "body": body}  # <-- make value type Any
+        payload: Dict[str, Any] = {"title": title, "body": body}
         if labels:
             payload["labels"] = labels
         if self.dry_run:
-            logging.info("DRY RUN: would create issue in %s title=%s", repo, title)
+            logging.info("DRY RUN: would create issue in %s title=%s labels=%s", repo, title, labels)
             return {"number": 0, "html_url": "(dry-run)"}
-        return self.call("POST", f"/repos/{repo}/issues", payload)
+        try:
+            result = self.call("POST", f"/repos/{repo}/issues", payload)
+            logging.info("Successfully created issue in %s: %s", repo, result.get("html_url", ""))
+            return result
+        except HTTPError as e:
+            logging.error("Failed to create issue in %s: HTTP %d - %s", repo, e.code, e.reason)
+            raise
 
 # ---------------------------- Finding processing ----------------------------
 
@@ -700,10 +724,17 @@ def process_repo(repo: str,
         return (repo, False)
 
     today = datetime.date.today().isoformat()
-    title = f"{title_prefix} Weekly secrets report - {today}"
+    title = f"{title_prefix} Secrets scan report - {today}"
 
+    # Check for exact match (same day issue)
     if gh.search_issue_by_title(repo, title):
         logging.info("Open issue already exists today for %s", repo)
+        return (repo, False)
+
+    # Check for recent issues (within 7 days) to avoid spam
+    title_pattern = f"{title_prefix} Secrets scan report"
+    if gh.search_recent_issues(repo, title_pattern, days=7):
+        logging.info("Recent open issue exists in %s, skipping to avoid duplicates", repo)
         return (repo, False)
 
     auto = labels_for_items(items, extra_labels)
