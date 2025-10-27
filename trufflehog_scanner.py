@@ -431,50 +431,48 @@ class GHClient:
 def make_finding_key(repo: str, detector: str, path: str,
                      line: Optional[int], commit: Optional[str]) -> Tuple[str, str, str, Optional[int], Optional[str]]:
     """Stable key to identify a unique finding instance."""
-    return (sanitize_repo(repo or ""), str(detector or ""), str(path or ""), line if line is not None else None, str(commit) if commit else None)
+    return (sanitize_repo(repo or ""), str(detector or ""), str(path or ""), line, str(commit) if commit else None)
 
-def load_findings(ndjson_path: str, exclude_regexes: List[re.Pattern]) -> Dict[str, List[Dict[str, Any]]]:
-    """Read NDJSON and return findings grouped by repo, filtered to Verified==True and not excluded, de-duped."""
-    findings_by_repo: Dict[str, List[Dict[str, Any]]] = {}
-    seen = set()
-
-    if not os.path.exists(ndjson_path) or os.path.getsize(ndjson_path) == 0:
-        logging.info("NDJSON file missing or empty: %s", ndjson_path)
-        return findings_by_repo
-
-    with open(ndjson_path, "r", encoding="utf-8") as f:
+def iter_ndjson(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Any:
+    """Generator that yields parsed NDJSON objects, optionally filtered."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return
+    exclude_regexes = exclude_regexes or []
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
+                if verified_only and obj.get("Verified") is not True:
+                    continue
+                if exclude_regexes and is_excluded(obj, exclude_regexes):
+                    continue
+                yield obj
             except Exception:
                 continue
 
-            if obj.get("Verified") is not True:
-                continue
+def load_findings(ndjson_path: str, exclude_regexes: List[re.Pattern]) -> Dict[str, List[Dict[str, Any]]]:
+    """Read NDJSON and return findings grouped by repo, filtered to Verified==True and not excluded, de-duped."""
+    findings_by_repo: Dict[str, List[Dict[str, Any]]] = {}
+    seen = set()
 
-            if is_excluded(obj, exclude_regexes):
-                continue
+    for obj in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
+        repo = sanitize_repo(find_repo(obj) or "")
+        if not repo:
+            continue
 
-            repo = find_repo(obj)
-            if not repo:
-                continue
-            repo = sanitize_repo(repo)
+        item = {
+            "detector": obj.get("DetectorName") or obj.get("DetectorType") or "Unknown",
+            "file": file_path(obj),
+            "line": line_no(obj),
+            "commit": commit_sha(obj),
+        }
 
-            item = {
-                "detector": obj.get("DetectorName") or obj.get("DetectorType") or "Unknown",
-                "file": file_path(obj),
-                "line": line_no(obj),
-                "commit": commit_sha(obj),
-            }
-
-            key = make_finding_key(repo, item["detector"], item["file"], item["line"], item["commit"])
-            if key in seen:
-                continue
+        key = make_finding_key(repo, item["detector"], item["file"], item["line"], item["commit"])
+        if key not in seen:
             seen.add(key)
-
             findings_by_repo.setdefault(repo, []).append(item)
 
     logging.info("Loaded findings for %d repo(s) (verified and not excluded)", len(findings_by_repo))
@@ -501,37 +499,21 @@ def print_sanitized_preview(ndjson_path: str, org: str, max_lines: int,
     """Print up to N sanitized VERIFIED findings to stdout for quick inspection."""
     if max_lines <= 0:
         return
-    if not os.path.exists(ndjson_path):
-        logging.info("[%s] NDJSON not found for preview: %s", org, ndjson_path)
-        return
     shown = 0
-    with open(ndjson_path, "r", encoding="utf-8") as fh:
-        for raw in fh:
-            if shown >= max_lines:
-                break
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                o = json.loads(raw)
-            except Exception:
-                continue
-            if o.get("Verified") is not True:
-                continue
-            if is_excluded(o, exclude_regexes):
-                continue
-            _print_one_sanitized(o, org)
-            shown += 1
-    logging.info("[%s] preview printed %d line(s)", org, shown)
+    for obj in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
+        if shown >= max_lines:
+            break
+        _print_one_sanitized(obj, org)
+        shown += 1
+    if shown > 0:
+        logging.info("[%s] preview printed %d line(s)", org, shown)
 
 def ndjson_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tuple[int, int, int, int]:
-    total = 0
-    bad = 0
-    repos = set()
-    dets = set()
+    total, bad, repos, dets = 0, 0, set(), set()
     if not os.path.exists(path):
         logging.info("[%s] NDJSON not found: %s", org, path)
         return (0, 0, 0, 0)
+
     with open(path, "r", encoding="utf-8") as f:
         for raw in f:
             raw = raw.strip()
@@ -540,17 +522,13 @@ def ndjson_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tupl
             total += 1
             try:
                 o = json.loads(raw)
+                if not is_excluded(o, exclude_regexes):
+                    if r := find_repo(o):
+                        repos.add(sanitize_repo(r))
+                    if d := (o.get("DetectorName") or o.get("DetectorType")):
+                        dets.add(str(d))
             except Exception:
                 bad += 1
-                continue
-            if is_excluded(o, exclude_regexes):
-                continue
-            r = find_repo(o)
-            if r:
-                repos.add(sanitize_repo(r))
-            d = o.get("DetectorName") or o.get("DetectorType")
-            if d:
-                dets.add(str(d))
     return (total, bad, len(repos), len(dets))
 
 def load_errors_ndjson(path: Optional[str]) -> List[Dict[str, Any]]:
@@ -583,52 +561,34 @@ def write_markdown_summary(ndjson_path: str,
     Counts and detailed rows reflect unique findings only.
     """
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-
-    # De-duped containers
     unique_seen = set()
     per_repo = collections.Counter()
-    per_det  = collections.Counter()
+    per_det = collections.Counter()
     per_repo_rows: Dict[str, List[Tuple[str, str, Optional[int], str]]] = {}
-
     total = 0
 
-    if os.path.exists(ndjson_path):
-        with open(ndjson_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except Exception:
-                    continue
+    for o in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
+        det = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
+        repo = sanitize_repo(find_repo(o) or "")
+        if not repo:
+            continue
 
-                if o.get("Verified") is not True:
-                    continue
-                if is_excluded(o, exclude_regexes):
-                    continue
+        fpath = file_path(o)
+        ln = line_no(o)
+        sha = commit_sha(o)
+        link = line_link(repo, sha, fpath, ln)
 
-                det  = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
-                repo = sanitize_repo(find_repo(o) or "")
-                fpath = file_path(o)
-                ln    = line_no(o)
-                sha   = commit_sha(o)
-                link  = line_link(repo, sha, fpath, ln)
+        key = make_finding_key(repo, det, fpath, ln, sha)
+        if key in unique_seen:
+            continue
+        unique_seen.add(key)
 
-                if not repo:
-                    continue
+        total += 1
+        per_repo[repo] += 1
+        per_det[det] += 1
 
-                key = make_finding_key(repo, det, fpath, ln, sha)
-                if key in unique_seen:
-                    continue
-                unique_seen.add(key)
-
-                total += 1
-                per_repo[repo] += 1
-                per_det[det] += 1
-
-                if include_detailed:
-                    per_repo_rows.setdefault(repo, []).append((det, fpath, ln, link))
+        if include_detailed:
+            per_repo_rows.setdefault(repo, []).append((det, fpath, ln, link))
 
     content_lines: List[str] = []
     content_lines.append(f"## TruffleHog summary for `{org}`\n")
@@ -652,41 +612,24 @@ def write_markdown_summary(ndjson_path: str,
         content_lines.append("### Detailed verified findings by repository (unique)\n")
         total_rows = 0
         for repo, _cnt in per_repo.most_common():
-            rows = per_repo_rows.get(repo, [])
-            if not rows:
-                continue
-            # Defensive row de-dupe
-            seen_rows = set()
-            deduped_rows: List[Tuple[str, str, Optional[int], str]] = []
-            for (det, fpath, ln, link) in rows:
-                row_key = (det, fpath, ln, link)
-                if row_key in seen_rows:
-                    continue
-                seen_rows.add(row_key)
-                deduped_rows.append((det, fpath, ln, link))
-
-            if not deduped_rows:
+            rows = list(dict.fromkeys(per_repo_rows.get(repo, [])))  # De-dupe while preserving order
+            if not rows or total_rows >= max(1, detailed_max_total):
                 continue
 
             content_lines.append(f"#### `{repo}`\n")
             content_lines.append("| Detector | File | Line | Link |\n|---|---|---:|---|\n")
-            shown = 0
-            for (det, fpath, ln, link) in deduped_rows:
-                if shown >= max(1, detailed_per_repo) or total_rows >= max(1, detailed_max_total):
+            for idx, (det, fpath, ln, link) in enumerate(rows):
+                if idx >= max(1, detailed_per_repo) or total_rows >= max(1, detailed_max_total):
                     break
                 ln_str = str(ln) if ln is not None else ""
-                link_md = link if link else ""
-                content_lines.append(f"| {det} | `{fpath}` | {ln_str} | {link_md} |\n")
-                shown += 1
+                content_lines.append(f"| {det} | `{fpath}` | {ln_str} | {link or ''} |\n")
                 total_rows += 1
-            if shown == 0:
-                content_lines.append("| _limit reached_ |  |  |  |\n")
             content_lines.append("\n")
-            if total_rows >= max(1, detailed_max_total):
-                remaining = sum(len(v) for v in per_repo_rows.values()) - total_rows
-                if remaining > 0:
-                    content_lines.append(f"_... {remaining} more finding(s) omitted to keep the summary concise._\n\n")
-                break
+
+        if total_rows >= max(1, detailed_max_total):
+            remaining = sum(len(v) for v in per_repo_rows.values()) - total_rows
+            if remaining > 0:
+                content_lines.append(f"_... {remaining} more finding(s) omitted to keep the summary concise._\n\n")
 
     errs = load_errors_ndjson(errors_path)
     if errs:
@@ -786,30 +729,22 @@ def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: in
     if not diag_dir or not os.path.isdir(diag_dir):
         logging.info("[%s] diag dir not found: %s", org, diag_dir)
         return
+
     printed = 0
     for root, _dirs, files in os.walk(diag_dir):
         for fn in sorted(files):
-            if not fn.endswith(".ndjson"):
+            if not fn.endswith(".ndjson") or printed >= max_files:
                 continue
             path = os.path.join(root, fn)
-            size = os.path.getsize(path)
-            print(f"[{org}] diag file: {path} bytes={size}")
-            if size == 0:
-                continue
-            with open(path, "r", encoding="utf-8") as fh:
-                c = 0
-                for line in fh:
-                    if c >= max_lines:
-                        break
-                    try:
-                        obj = json.loads(line)
-                    except Exception:
-                        continue
-                    _print_one_sanitized(obj, org)
-                    c += 1
+            print(f"[{org}] diag file: {path} bytes={os.path.getsize(path)}")
+
+            c = 0
+            for obj in iter_ndjson(path):
+                if c >= max_lines:
+                    break
+                _print_one_sanitized(obj, org)
+                c += 1
             printed += 1
-            if printed >= max_files:
-                return
 
 # ---------------------------- CLI and main ----------------------------
 
