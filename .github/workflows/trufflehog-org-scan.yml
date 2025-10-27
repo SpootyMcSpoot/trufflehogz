@@ -67,11 +67,6 @@ on:
           - "verified"
           - "verified,unknown"
           - "all"
-      max_repo_size_kb:
-        description: "Skip repos larger than (KB, 0=unlimited)"
-        required: false
-        default: "0"
-        type: string
       trufflehog_version:
         description: "TruffleHog Docker image version"
         required: false
@@ -87,11 +82,6 @@ on:
           - "main-only"
           - "main-recent"
           - "protected"
-      branch_lookback_days:
-        description: "Days to look back for recent branches"
-        required: false
-        default: "30"
-        type: string
       scan_mode:
         description: "Scan mode"
         required: false
@@ -101,26 +91,6 @@ on:
           - "full"
           - "recent"
           - "incremental"
-      scan_lookback_days:
-        description: "Days to scan (recent/incremental mode)"
-        required: false
-        default: "7"
-        type: string
-      adaptive_timeout:
-        description: "Adjust timeout based on repo size"
-        required: false
-        default: true
-        type: boolean
-      skip_stale_branches:
-        description: "Skip branches not updated in 90+ days"
-        required: false
-        default: true
-        type: boolean
-      enable_size_based_sharding:
-        description: "Distribute repos by size for better load balancing"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -178,7 +148,7 @@ jobs:
       API: https://api.github.com
       SHARD_CAP: "${{ inputs.shard_cap || '10' }}"
       REPOS_PER_SHARD: "${{ inputs.repos_per_shard || '50' }}"
-      SIZE_BASED_SHARDING: "${{ inputs.enable_size_based_sharding && 'true' || 'false' }}"
+      SIZE_BASED_SHARDING: "false"
     steps:
       - id: build
         shell: bash
@@ -300,7 +270,7 @@ jobs:
       ALL_HEADS: "true"
       PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || '5m' }}
       SCAN_PAR: ${{ inputs.scan_parallel || '8' }}
-      MAX_REPO_SIZE_KB: ${{ inputs.max_repo_size_kb || '0' }}
+      MAX_REPO_SIZE_KB: "0"
       SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
       ALLOW_VER_OVERLAP: "true"
       EXCLUDE_GENERIC: "false"
@@ -311,12 +281,12 @@ jobs:
       SHARD_INDEX1: ${{ matrix.index1 }}
       SHARD_TOTAL: ${{ matrix.shard_total }}
       BRANCH_STRATEGY: ${{ inputs.branch_strategy || 'main-recent' }}
-      BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
+      BRANCH_LOOKBACK_DAYS: "30"
       SCAN_MODE: ${{ inputs.scan_mode || 'recent' }}
-      SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
-      ADAPTIVE_TIMEOUT: ${{ inputs.adaptive_timeout != false && 'true' || 'false' }}
-      SKIP_STALE_BRANCHES: ${{ inputs.skip_stale_branches != false && 'true' || 'false' }}
-      SIZE_BASED_SHARDING: ${{ inputs.enable_size_based_sharding && 'true' || 'false' }}
+      SCAN_LOOKBACK_DAYS: "7"
+      ADAPTIVE_TIMEOUT: "true"
+      SKIP_STALE_BRANCHES: "true"
+      SIZE_BASED_SHARDING: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -766,9 +736,9 @@ jobs:
           SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
           BRANCH_STRATEGY: ${{ inputs.branch_strategy || 'main-recent' }}
           SCAN_MODE: ${{ inputs.scan_mode || 'recent' }}
-          SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
-          ADAPTIVE_TIMEOUT: ${{ inputs.adaptive_timeout != false && 'true' || 'false' }}
-          SIZE_BASED_SHARDING: ${{ inputs.enable_size_based_sharding && 'true' || 'false' }}
+          SCAN_LOOKBACK_DAYS: "7"
+          ADAPTIVE_TIMEOUT: "true"
+          SIZE_BASED_SHARDING: "false"
         run: |
           set -Eeuo pipefail
 
