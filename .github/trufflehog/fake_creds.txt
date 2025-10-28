@@ -83,3 +83,132 @@ users:
 SECRET_KEY_BASE=2b1d8f1c2e3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c
 API_SECRET=supersecretvalue1234567890
 PASSWORD=hunter2
+
+# --- More AWS variations (realistic format but fake) ---
+export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY"
+AWS_SESSION_TOKEN=FwoGZXIvYXdzEBQaDExampleTokenDataHere123456789==
+
+# --- GitHub tokens (various formats) ---
+# Classic PAT (ghp_ prefix)
+GITHUB_PAT=ghp_1234567890abcdefghijklmnopqrstuvwxyzAB
+# Fine-grained PAT (github_pat_ prefix)
+GITHUB_FINE_GRAINED_PAT=github_pat_11AAAAAA1234567890abcdefghijklmnopqrst_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
+# OAuth token (gho_ prefix)
+GITHUB_OAUTH_TOKEN=gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef
+# User-to-server token (ghu_ prefix)
+GITHUB_USER_TOKEN=ghu_1234567890abcdefghijklmnopqrstuvwxyz
+# Server-to-server token (ghs_ prefix)
+GITHUB_SERVER_TOKEN=ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef1234
+# Refresh token (ghr_ prefix)
+GITHUB_REFRESH_TOKEN=ghr_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop
+
+# --- NPM tokens ---
+NPM_TOKEN=npm_1234567890abcdefghijklmnopqrstuvwxyz
+//registry.npmjs.org/:_authToken=npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef1234567890
+
+# --- PyPI / Twine ---
+TWINE_PASSWORD=pypi-AgEIcHlwaS5vcmcCJGFiY2RlZmdoLWlqa2wtbW5vcC1xcnN0LXV2d3h5ejAxMjM0NQACKlszLCI5OGFiY2RlZi0xMjM0LTU2NzgtOWFiYy1kZWYwMTIzNDU2NzgiXQAABiAEXAMPLETOKENDATA=
+
+# --- Slack webhooks ---
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX
+SLACK_WEBHOOK=https://hooks.slack.com/services/T12345678/B12345678/abcdefghijklmnopqrstuvwx
+
+# --- Discord webhooks ---
+DISCORD_WEBHOOK=https://discord.com/api/webhooks/123456789012345678/aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890aBcDeFgHiJkLmNoPqRsTuVwXyZ123456
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/987654321098765432/ZyXwVuTsRqPoNmLkJiHgFeDcBa0987654321ZyXwVuTsRqPoNmLkJiHgFe
+
+# --- Datadog ---
+DD_API_KEY=1234567890abcdef1234567890abcdef
+DD_APP_KEY=abcdef1234567890abcdef1234567890abcdef12
+
+# --- New Relic ---
+NEW_RELIC_LICENSE_KEY=1234567890abcdef1234567890abcdef12345678
+NEW_RELIC_API_KEY=NRAK-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567
+
+# --- Heroku ---
+HEROKU_API_KEY=12345678-90ab-cdef-1234-567890abcdef
+HEROKU_OAUTH_TOKEN=Bearer 12345678-90ab-cdef-1234-567890abcdef
+
+# --- MongoDB connection strings ---
+MONGO_URL=mongodb://admin:MyS3cr3tP@ssw0rd@cluster0.mongodb.net:27017/mydb?retryWrites=true
+MONGODB_URI=mongodb+srv://dbuser:SuperSecretPassword123@cluster0.abcde.mongodb.net/production?retryWrites=true&w=majority
+
+# --- Redis with password ---
+REDIS_URL=redis://:mySuperSecretRedisPassword123@redis-server.example.com:6379/0
+REDIS_TLS_URL=rediss://:anotherSecretPassword456@redis.example.com:6380
+
+# --- PostgreSQL with embedded credentials ---
+POSTGRES_URL=postgresql://dbadmin:Tr0ub4dor&3@postgres.example.com:5432/production_db?sslmode=require
+PG_CONNECTION_STRING=postgres://app_user:MyDBP@ssw0rd!2024@db-primary.example.com:5432/app_db
+
+# --- Shopify ---
+SHOPIFY_API_KEY=shpat_abcdef1234567890abcdef1234567890
+SHOPIFY_ACCESS_TOKEN=shpss_1234567890abcdef1234567890abcdef
+
+# --- Square ---
+SQUARE_ACCESS_TOKEN=EAAAEOa1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6
+SQUARE_APPLICATION_SECRET=sq0csp-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghijklmno
+
+# --- Grafana ---
+GRAFANA_API_KEY=eyJrIjoiYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkwIiwibiI6InRlc3QiLCJpZCI6MX0=
+GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop
+
+# --- Confluent / Kafka ---
+CONFLUENT_CLOUD_API_KEY=ABCDEFGHIJKLMNOP
+CONFLUENT_CLOUD_API_SECRET=1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12
+
+# --- Terraform Cloud ---
+TFC_TOKEN=ABCDEfghIJKLmnopQRSTuvwxYZ12.atlasv1.1234567890aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890aBcDeFgHiJkLmNoPqRsTuVwXyZ
+
+# --- CircleCI ---
+CIRCLE_TOKEN=1234567890abcdef1234567890abcdef12345678
+
+# --- Travis CI ---
+TRAVIS_TOKEN=abcdefghijklmnopqrstuvwxyz1234567890ABCD
+
+# --- GitLab ---
+GITLAB_TOKEN=glpat-1234567890abcdefghij
+GITLAB_RUNNER_TOKEN=GR1348941abcdefghijklmnopqrst
+
+# --- Bitbucket ---
+BITBUCKET_APP_PASSWORD=ATBBabcdefghijklmnopqrst
+
+# --- PagerDuty ---
+PAGERDUTY_API_KEY=u+abcdefghijklmnopqrst
+PAGERDUTY_INTEGRATION_KEY=1234567890abcdef1234567890abcdef
+
+# --- Sentry ---
+SENTRY_AUTH_TOKEN=sntrys_1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+SENTRY_DSN=https://1234567890abcdef1234567890abcdef@o123456.ingest.sentry.io/1234567
+
+# --- LaunchDarkly ---
+LAUNCHDARKLY_SDK_KEY=sdk-12345678-90ab-cdef-1234-567890abcdef
+LAUNCHDARKLY_ACCESS_TOKEN=api-12345678-90ab-cdef-1234-567890abcdef
+
+# --- Algolia ---
+ALGOLIA_API_KEY=1234567890abcdef1234567890abcdef
+ALGOLIA_APP_ID=ABCD1234EF
+
+# --- Auth0 ---
+AUTH0_CLIENT_SECRET=AbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGhIjKlMnOpQrStUvWxYz
+AUTH0_MANAGEMENT_API_TOKEN=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkFCQ0RFRiJ9.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuYXV0aDAuY29tLyJ9.dummysignature
+
+# --- Cloudflare ---
+CLOUDFLARE_API_KEY=1234567890abcdef1234567890abcdef12345
+CLOUDFLARE_API_TOKEN=AbCdEfGhIjKlMnOpQrStUvWxYz1234567890Ab
+
+# --- Facebook / Meta ---
+FACEBOOK_APP_SECRET=1234567890abcdef1234567890abcdef
+FB_ACCESS_TOKEN=EAABsbCS1iHgBAAbCdEfGhIjKlMnOpQrStUvWxYz1234567890
+
+# --- Google OAuth ---
+GOOGLE_CLIENT_SECRET=GOCSPX-AbCdEfGhIjKlMnOpQrStUvWxYz
+GOOGLE_OAUTH_REFRESH_TOKEN=1//1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ
+
+# --- Anthropic (Claude) ---
+ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghijklmnopqrstuvwxyz
+
+# --- OpenAI ---
+OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdefghijklmnop
+OPENAI_ORG_KEY=sk-1234567890abcdefABCDEF1234567890abcdefABCDEF
