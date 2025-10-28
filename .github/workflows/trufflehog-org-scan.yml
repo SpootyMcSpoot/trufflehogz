@@ -18,46 +18,6 @@ on:
         required: false
         default: false
         type: boolean
-      scan_parallel:
-        description: "Concurrent repos per shard"
-        required: false
-        default: "8"
-        type: choice
-        options:
-          - "4"
-          - "8"
-          - "12"
-          - "16"
-      per_repo_timeout:
-        description: "Timeout per repository"
-        required: false
-        default: "5m"
-        type: choice
-        options:
-          - "3m"
-          - "5m"
-          - "10m"
-          - "15m"
-      shard_cap:
-        description: "Maximum shards per org"
-        required: false
-        default: "10"
-        type: choice
-        options:
-          - "5"
-          - "10"
-          - "15"
-          - "20"
-      repos_per_shard:
-        description: "Target repos per shard"
-        required: false
-        default: "50"
-        type: choice
-        options:
-          - "25"
-          - "50"
-          - "75"
-          - "100"
       scan_results:
         description: "Results filter"
         required: false
@@ -72,6 +32,16 @@ on:
         required: false
         default: "3.90.6"
         type: string
+      per_repo_timeout:
+        description: "Timeout per repository"
+        required: false
+        default: "5m"
+        type: choice
+        options:
+          - "3m"
+          - "5m"
+          - "10m"
+          - "15m"
       branch_strategy:
         description: "Branch scanning strategy"
         required: false
@@ -118,27 +88,6 @@ on:
           - "7"
           - "14"
           - "30"
-      adaptive_timeout:
-        description: "Use adaptive timeout based on repo size"
-        required: false
-        default: true
-        type: boolean
-      skip_stale_branches:
-        description: "Skip branches with no activity in 90 days"
-        required: false
-        default: true
-        type: boolean
-      max_finding_log_lines:
-        description: "Maximum sanitized finding lines to log"
-        required: false
-        default: "300"
-        type: choice
-        options:
-          - "50"
-          - "100"
-          - "300"
-          - "500"
-          - "1000"
 
 permissions:
   contents: read
@@ -194,8 +143,8 @@ jobs:
     env:
       GH_PAT: ${{ secrets.GH_PAT }}
       API: https://api.github.com
-      SHARD_CAP: "${{ inputs.shard_cap || '10' }}"
-      REPOS_PER_SHARD: "${{ inputs.repos_per_shard || '50' }}"
+      SHARD_CAP: "10"
+      REPOS_PER_SHARD: "50"
       SIZE_BASED_SHARDING: "false"
     steps:
       - id: build
@@ -317,12 +266,12 @@ jobs:
       SCAN_HISTORY: "true"
       ALL_HEADS: "true"
       PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || '5m' }}
-      SCAN_PAR: ${{ inputs.scan_parallel || '8' }}
+      SCAN_PAR: "8"
       MAX_REPO_SIZE_KB: "0"
       SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
       ALLOW_VER_OVERLAP: "true"
       EXCLUDE_GENERIC: "false"
-      MAX_FINDING_LOG_LINES: ${{ inputs.max_finding_log_lines || '300' }}
+      MAX_FINDING_LOG_LINES: "300"
       OPEN_ISSUES: ${{ inputs.open_issues }}
       TRUFFLEHOG_DISABLE_UPDATER: "1"
       SHARD_INDEX: ${{ matrix.index }}
@@ -333,8 +282,8 @@ jobs:
       BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
       SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || 'recent' }}
       SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
-      ADAPTIVE_TIMEOUT: ${{ inputs.adaptive_timeout != false && 'true' || 'false' }}
-      SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || inputs.skip_stale_branches != false && 'true' || 'false' }}
+      ADAPTIVE_TIMEOUT: "true"
+      SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
       SIZE_BASED_SHARDING: "false"
     steps:
       - name: Checkout
@@ -779,18 +728,18 @@ jobs:
           TOTAL_SHARDS: ${{ needs.plan.outputs.total_shards }}
           ORGS_JSON: ${{ needs.plan.outputs.orgs_json }}
           OPEN_ISSUES: ${{ inputs.open_issues }}
-          SCAN_PAR: ${{ inputs.scan_parallel || '8' }}
+          SCAN_PAR: "8"
           PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || '5m' }}
-          SHARD_CAP: ${{ inputs.shard_cap || '10' }}
-          REPOS_PER_SHARD: ${{ inputs.repos_per_shard || '50' }}
+          SHARD_CAP: "10"
+          REPOS_PER_SHARD: "50"
           SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
           DEEP_SCAN: ${{ inputs.deep_scan || false }}
           BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || 'main-recent' }}
           BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
           SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || 'recent' }}
           SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
-          ADAPTIVE_TIMEOUT: ${{ inputs.adaptive_timeout != false && 'true' || 'false' }}
-          SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || inputs.skip_stale_branches != false && 'true' || 'false' }}
+          ADAPTIVE_TIMEOUT: "true"
+          SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
           SIZE_BASED_SHARDING: "false"
         run: |
           set -Eeuo pipefail
