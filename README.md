@@ -265,8 +265,8 @@ max_finding_log_lines: 1000
     trufflehog-org-scan.yml       # Main workflow (800+ lines)
   trufflehog/
     false_positives.txt           # Regex-based suppressions
-    fake_creds.txt                # Test fixtures
 trufflehog_scanner.py             # Python post-processor (860 lines)
+PERMISSION_ANALYSIS.md            # Technical API endpoint reference
 .gitignore                        # Python/IDE/OS artifacts
 ```
 
@@ -635,6 +635,8 @@ When using `deep_scan: true`:
 ## Additional Documentation
 
 All comprehensive documentation is consolidated in this README for easier maintenance.
+
+For technical details on API endpoints and permission mappings, see [PERMISSION_ANALYSIS.md](PERMISSION_ANALYSIS.md).
 
 ## Related Resources
 
