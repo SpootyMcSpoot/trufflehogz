@@ -634,9 +634,13 @@ When using `deep_scan: true`:
 
 ## Additional Documentation
 
-All comprehensive documentation is consolidated in this README for easier maintenance.
+### Core Documentation
+- **[PERMISSION_ANALYSIS.md](PERMISSION_ANALYSIS.md)**: Complete API endpoint reference and permission requirements for both Classic and Fine-Grained PATs
+- **[TEST_FIXTURES.md](TEST_FIXTURES.md)**: Documentation of intentional test secrets included in this repository for TruffleHog validation
 
-For technical details on API endpoints and permission mappings, see [PERMISSION_ANALYSIS.md](PERMISSION_ANALYSIS.md).
+### Important Notes
+
+**Test Data**: This repository contains intentional fake secrets for testing TruffleHog detection. See [TEST_FIXTURES.md](TEST_FIXTURES.md) for complete details on test fixtures.
 
 ## Related Resources
 
@@ -648,7 +652,25 @@ For technical details on API endpoints and permission mappings, see [PERMISSION_
 
 ## Changelog
 
-### v2.2 (Current)
+### v2.3 (Current)
+- **Code Quality Improvements**:
+  - Fixed finding deduplication bug where None line numbers caused incorrect deduplication
+  - Parameterized hardcoded values (rate limits, timeouts, retry settings) for better configurability
+  - Added comprehensive type hints throughout Python codebase
+  - Improved code maintainability and reliability
+- **Enhanced Documentation**:
+  - Complete PERMISSION_ANALYSIS.md with verified API endpoint requirements and troubleshooting
+  - New TEST_FIXTURES.md explaining intentional test secrets in repository
+  - Updated README with links to new documentation
+- **Configuration Constants**: All tunable parameters now documented at top of trufflehog_scanner.py:
+  - `DEFAULT_RATE_LIMIT_PER_SEC = 4.0` - GitHub API calls per second
+  - `DEFAULT_API_TIMEOUT_SEC = 30` - Timeout for API calls
+  - `DEFAULT_MAX_RETRIES = 5` - Maximum retry attempts
+  - `DEFAULT_BACKOFF_BASE = 1.5` - Exponential backoff multiplier
+  - `MAX_BACKOFF_SEC = 16.0` - Maximum backoff sleep time
+  - `DEFAULT_ISSUE_DEDUP_DAYS = 7` - Issue deduplication window
+
+### v2.2
 - **Deep Scan Mode**: New `deep_scan` flag for comprehensive monthly/quarterly audits
   - Automatically scans ALL branches and ALL commits (including commits older than 30 days)
   - Overrides branch_strategy and scan_mode settings

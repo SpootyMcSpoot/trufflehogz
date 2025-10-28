@@ -63,22 +63,34 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus, quote as urlquote, urlparse
 from urllib.request import Request, urlopen
 
+# ---------------------------- Configuration constants ----------------------------
+
 API_BASE = "https://api.github.com"
+
+# API rate limiting and retry configuration
+DEFAULT_RATE_LIMIT_PER_SEC = 4.0  # GitHub API calls per second
+DEFAULT_API_TIMEOUT_SEC = 30      # Timeout for individual API calls
+DEFAULT_MAX_RETRIES = 5           # Maximum retry attempts for failed API calls
+DEFAULT_BACKOFF_BASE = 1.5        # Exponential backoff base multiplier
+MAX_BACKOFF_SEC = 16.0            # Maximum backoff sleep time
+
+# Issue deduplication window
+DEFAULT_ISSUE_DEDUP_DAYS = 7      # Days to search for existing issues
 
 # ---------------------------- Rate limiting ----------------------------
 
 class RateLimiter:
-    def __init__(self, calls_per_sec: float = 4.0):
+    def __init__(self, calls_per_sec: float = DEFAULT_RATE_LIMIT_PER_SEC):
         self.interval = 1.0 / max(0.1, calls_per_sec)
         self.lock = threading.Lock()
         self.last = 0.0
 
-    def wait(self):
+    def wait(self) -> None:
         with self.lock:
             now = time.time()
             wait_for = self.last + self.interval - now
@@ -86,7 +98,7 @@ class RateLimiter:
                 time.sleep(wait_for)
             self.last = time.time()
 
-GLOBAL_LIMITER = RateLimiter(calls_per_sec=4.0)
+GLOBAL_LIMITER = RateLimiter(calls_per_sec=DEFAULT_RATE_LIMIT_PER_SEC)
 
 # ---------------------------- Logging ----------------------------
 
@@ -336,7 +348,7 @@ class GHClient:
         req.add_header("Authorization", f"Bearer {self.token}")
         req.add_header("Accept", "application/vnd.github+json")
         try:
-            with urlopen(req, timeout=30) as resp:
+            with urlopen(req, timeout=DEFAULT_API_TIMEOUT_SEC) as resp:
                 body = resp.read().decode("utf-8")
                 return json.loads(body) if body.strip() else {}
         except HTTPError as e:
@@ -352,7 +364,7 @@ class GHClient:
             raise
 
     def call(self, method: str, path: str, payload: Optional[dict] = None,
-             max_retries: int = 5, backoff_base: float = 1.5) -> dict:
+             max_retries: int = DEFAULT_MAX_RETRIES, backoff_base: float = DEFAULT_BACKOFF_BASE) -> dict:
         if self.dry_run and method.upper() in ("POST", "PATCH", "PUT", "DELETE"):
             logging.info("DRY RUN: %s %s payload=%s", method, path, payload)
             return {}
@@ -367,13 +379,13 @@ class GHClient:
                 if attempt >= max_retries:
                     logging.error("Max retries reached for %s %s", method, path)
                     raise
-                sleep_s = min(16.0, backoff_base ** attempt) + random.uniform(0, 0.5)
+                sleep_s = min(MAX_BACKOFF_SEC, backoff_base ** attempt) + random.uniform(0, 0.5)
                 time.sleep(sleep_s)
             except URLError:
                 if attempt >= max_retries:
                     logging.error("Max retries reached for %s %s", method, path)
                     raise
-                sleep_s = min(16.0, backoff_base ** attempt) + random.uniform(0, 0.5)
+                sleep_s = min(MAX_BACKOFF_SEC, backoff_base ** attempt) + random.uniform(0, 0.5)
                 time.sleep(sleep_s)
         return {}
 
@@ -395,7 +407,7 @@ class GHClient:
             logging.warning("Failed to search issues in %s: HTTP %d (may create duplicate)", repo, e.code)
             return False
 
-    def search_recent_issues(self, repo: str, title_pattern: str, days: int = 7) -> bool:
+    def search_recent_issues(self, repo: str, title_pattern: str, days: int = DEFAULT_ISSUE_DEDUP_DAYS) -> bool:
         """Search for recent issues matching a title pattern (partial match)."""
         import datetime
         cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
@@ -453,11 +465,19 @@ class GHClient:
 # ---------------------------- Finding processing ----------------------------
 
 def make_finding_key(repo: str, detector: str, path: str,
-                     line: Optional[int], commit: Optional[str]) -> Tuple[str, str, str, Optional[int], Optional[str]]:
-    """Stable key to identify a unique finding instance."""
-    return (sanitize_repo(repo or ""), str(detector or ""), str(path or ""), line, str(commit) if commit else None)
+                     line: Optional[int], commit: Optional[str]) -> Tuple[str, str, str, int, str]:
+    """
+    Stable key to identify a unique finding instance.
 
-def iter_ndjson(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Any:
+    Converts None values to canonical forms to ensure proper deduplication:
+    - None line numbers become -1 (unknown line)
+    - None commits become empty string
+    """
+    canonical_line = line if line is not None else -1
+    canonical_commit = str(commit) if commit else ""
+    return (sanitize_repo(repo or ""), str(detector or ""), str(path or ""), canonical_line, canonical_commit)
+
+def iter_ndjson(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Generator[Dict[str, Any], None, None]:
     """Generator that yields parsed NDJSON objects, optionally filtered."""
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return
@@ -755,7 +775,8 @@ def process_repo(repo: str,
 
 # ---------------------------- Diagnostics helpers ----------------------------
 
-def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: int) -> None:
+def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: int,
+                          exclude_regexes: Optional[List[re.Pattern]] = None) -> None:
     """Print quick diagnostics for per-repo NDJSON files."""
     if not diag_dir or not os.path.isdir(diag_dir):
         logging.info("[%s] diag dir not found: %s", org, diag_dir)
