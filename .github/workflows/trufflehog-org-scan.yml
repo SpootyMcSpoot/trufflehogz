@@ -91,6 +91,54 @@ on:
           - "full"
           - "recent"
           - "incremental"
+      deep_scan:
+        description: "Deep scan mode (scans all branches and all commits, overrides branch/scan strategies)"
+        required: false
+        default: false
+        type: boolean
+      branch_lookback_days:
+        description: "Branch lookback days (for main-recent strategy)"
+        required: false
+        default: "30"
+        type: choice
+        options:
+          - "7"
+          - "14"
+          - "30"
+          - "60"
+          - "90"
+      scan_lookback_days:
+        description: "Scan lookback days (for recent scan mode)"
+        required: false
+        default: "7"
+        type: choice
+        options:
+          - "1"
+          - "3"
+          - "7"
+          - "14"
+          - "30"
+      adaptive_timeout:
+        description: "Use adaptive timeout based on repo size"
+        required: false
+        default: true
+        type: boolean
+      skip_stale_branches:
+        description: "Skip branches with no activity in 90 days"
+        required: false
+        default: true
+        type: boolean
+      max_finding_log_lines:
+        description: "Maximum sanitized finding lines to log"
+        required: false
+        default: "300"
+        type: choice
+        options:
+          - "50"
+          - "100"
+          - "300"
+          - "500"
+          - "1000"
 
 permissions:
   contents: read
@@ -274,18 +322,19 @@ jobs:
       SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
       ALLOW_VER_OVERLAP: "true"
       EXCLUDE_GENERIC: "false"
-      MAX_FINDING_LOG_LINES: 300
+      MAX_FINDING_LOG_LINES: ${{ inputs.max_finding_log_lines || '300' }}
       OPEN_ISSUES: ${{ inputs.open_issues }}
       TRUFFLEHOG_DISABLE_UPDATER: "1"
       SHARD_INDEX: ${{ matrix.index }}
       SHARD_INDEX1: ${{ matrix.index1 }}
       SHARD_TOTAL: ${{ matrix.shard_total }}
-      BRANCH_STRATEGY: ${{ inputs.branch_strategy || 'main-recent' }}
-      BRANCH_LOOKBACK_DAYS: "30"
-      SCAN_MODE: ${{ inputs.scan_mode || 'recent' }}
-      SCAN_LOOKBACK_DAYS: "7"
-      ADAPTIVE_TIMEOUT: "true"
-      SKIP_STALE_BRANCHES: "true"
+      DEEP_SCAN: ${{ inputs.deep_scan || false }}
+      BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || 'main-recent' }}
+      BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
+      SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || 'recent' }}
+      SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
+      ADAPTIVE_TIMEOUT: ${{ inputs.adaptive_timeout != false && 'true' || 'false' }}
+      SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || inputs.skip_stale_branches != false && 'true' || 'false' }}
       SIZE_BASED_SHARDING: "false"
     steps:
       - name: Checkout
@@ -735,10 +784,13 @@ jobs:
           SHARD_CAP: ${{ inputs.shard_cap || '10' }}
           REPOS_PER_SHARD: ${{ inputs.repos_per_shard || '50' }}
           SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
-          BRANCH_STRATEGY: ${{ inputs.branch_strategy || 'main-recent' }}
-          SCAN_MODE: ${{ inputs.scan_mode || 'recent' }}
-          SCAN_LOOKBACK_DAYS: "7"
-          ADAPTIVE_TIMEOUT: "true"
+          DEEP_SCAN: ${{ inputs.deep_scan || false }}
+          BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || 'main-recent' }}
+          BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
+          SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || 'recent' }}
+          SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
+          ADAPTIVE_TIMEOUT: ${{ inputs.adaptive_timeout != false && 'true' || 'false' }}
+          SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || inputs.skip_stale_branches != false && 'true' || 'false' }}
           SIZE_BASED_SHARDING: "false"
         run: |
           set -Eeuo pipefail
@@ -759,17 +811,25 @@ jobs:
             echo "| Results Filter | ${SCAN_RESULTS} |"
             echo "| Create Issues | ${OPEN_ISSUES} |"
             echo ""
-            echo "## Performance Optimizations"
+            echo "## Scan Configuration"
             echo "| Feature | Value |"
             echo "|---------|-------|"
+            echo "| Deep Scan Mode | ${DEEP_SCAN} |"
             echo "| Branch Strategy | ${BRANCH_STRATEGY} |"
-            echo "| Scan Mode | ${SCAN_MODE} (${SCAN_LOOKBACK_DAYS} days) |"
+            echo "| Branch Lookback Days | ${BRANCH_LOOKBACK_DAYS} |"
+            echo "| Scan Mode | ${SCAN_MODE} |"
+            echo "| Scan Lookback Days | ${SCAN_LOOKBACK_DAYS} |"
             echo "| Adaptive Timeout | ${ADAPTIVE_TIMEOUT} |"
+            echo "| Skip Stale Branches | ${SKIP_STALE_BRANCHES} |"
             echo "| Size-Based Sharding | ${SIZE_BASED_SHARDING} |"
             echo ""
-            [ "${BRANCH_STRATEGY}" = "main-recent" ] && echo "> **Branch filtering enabled**: Scanning default branch + branches updated in last 30 days"
-            [ "${SCAN_MODE}" = "recent" ] && echo "> **Time-based scanning enabled**: Only scanning commits from last ${SCAN_LOOKBACK_DAYS} days"
+            [ "${DEEP_SCAN}" = "true" ] && echo "> **Deep scan mode enabled**: Scanning ALL branches and ALL commits (ignores branch/scan strategy settings)"
+            [ "${BRANCH_STRATEGY}" = "main-recent" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Branch filtering enabled**: Scanning default branch + branches updated in last ${BRANCH_LOOKBACK_DAYS} days"
+            [ "${BRANCH_STRATEGY}" = "all" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **All branches mode**: Scanning all branches in each repository"
+            [ "${SCAN_MODE}" = "recent" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Time-based scanning enabled**: Only scanning commits from last ${SCAN_LOOKBACK_DAYS} days"
+            [ "${SCAN_MODE}" = "full" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Full history scan**: Scanning all commits in repository history"
             [ "${ADAPTIVE_TIMEOUT}" = "true" ] && echo "> **Adaptive timeout enabled**: Smaller repos get shorter timeouts (2-5m), large repos get longer (10-15m)"
+            [ "${SKIP_STALE_BRANCHES}" = "true" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Stale branch filtering**: Skipping branches with no activity in 90 days"
             [ "${SIZE_BASED_SHARDING}" = "true" ] && echo "> **Size-based sharding enabled**: Repos distributed by size for better load balancing"
             echo ""
             echo "## Status"
