@@ -14,13 +14,14 @@ A production-ready GitHub Actions workflow that scans multiple organizations for
 
 That's it! The workflow uses optimized defaults and runs **40-60% faster** than traditional scanning.
 
-## Performance Features (NEW)
+## Performance Features
 
 ### Built-in Optimizations (Enabled by Default)
 - **Smart Branch Filtering**: Scans default branch + recently updated branches only (vs all branches)
 - **Time-Based Scanning**: Only scans last 7 days of commits (vs full history)
 - **Adaptive Timeout**: Adjusts timeout based on repo size (2m-15m)
 - **Stale Branch Skipping**: Automatically skips branches not updated in 90+ days
+- **Deep Scan Mode** (NEW): Single flag to enable comprehensive scanning of ALL branches and ALL commits for monthly audits
 
 ### Performance Impact
 | Org Size | Before | After (Daily) | Improvement |
@@ -35,14 +36,19 @@ That's it! The workflow uses optimized defaults and runs **40-60% faster** than 
 ## Features
 
 ### Core Capabilities
-- Scans private, non-archived, non-fork repos across multiple organizations
-- Parallel scanning with intelligent sharding (up to 20 shards per org)
-- Verified-only results to minimize false positives
-- False positive filtering via regex patterns
-- Automated GitHub issue creation (per-repo, date-based deduplication)
-- Comprehensive workflow summaries with performance metrics
-- Docker image caching for faster startup
-- Rate limiting and retry logic with exponential backoff
+- **Multi-Organization Scanning**: Scan private, non-archived, non-fork repos across multiple organizations
+- **Parallel Processing**: Intelligent sharding with up to 20 shards per org for maximum throughput
+- **Verified Results**: Verified-only filtering to minimize false positives
+- **False Positive Filtering**: Regex-based pattern matching for suppression
+- **Automated Issue Creation**: Per-repo GitHub issues with date-based deduplication
+- **Comprehensive Summaries**: Detailed workflow summaries with performance metrics
+- **Docker Image Caching**: Faster startup times with cached TruffleHog images
+- **Robust Error Handling**: Rate limiting and retry logic with exponential backoff
+
+### Scanning Modes
+- **Standard Mode** (Default): Fast scanning of recent changes (7 days) on active branches (30 days)
+- **Deep Scan Mode** (NEW): Comprehensive scanning of ALL branches and complete commit history
+- **Custom Mode**: Granular control with 17 configurable parameters
 
 ### Smart Defaults
 - **Branch Strategy**: main-recent (default + updated branches)
@@ -51,20 +57,30 @@ That's it! The workflow uses optimized defaults and runs **40-60% faster** than 
 - **Repos per Shard**: 50 (configurable 25-100)
 - **Concurrent Scans**: 8 per shard (configurable 4-16)
 - **Results Filter**: verified + unknown
+- **All Settings**: Fully configurable via 17 workflow inputs
 
 ## Configuration
 
-### Workflow Inputs (10 Total)
+### Workflow Inputs (17 Total)
 
-The workflow accepts the following inputs via the Actions UI (Run workflow button):
-
-**Note**: GitHub Actions limits workflow_dispatch to 10 inputs. Additional settings use optimized defaults hardcoded in the workflow.
+The workflow accepts the following inputs via the Actions UI (Run workflow button). All inputs are fully configurable.
 
 #### Basic Configuration
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
 | `org_names` | comma-separated | (from var) | Organizations to scan |
 | `open_issues` | true/false | false | Create GitHub issues for findings |
+
+#### Deep Scan Mode
+| Input | Options | Default | Description |
+|-------|---------|---------|-------------|
+| `deep_scan` | true/false | false | **Deep scan mode**: Scans ALL branches and ALL commits (overrides branch_strategy and scan_mode) |
+
+**Important**: When `deep_scan` is enabled:
+- Branch strategy is automatically set to "all" (scans every branch)
+- Scan mode is automatically set to "full" (scans entire commit history)
+- Stale branch skipping is disabled (scans branches older than 90 days)
+- Use this for monthly comprehensive audits or initial baseline scans
 
 #### Performance Tuning
 | Input | Options | Default | Description |
@@ -79,27 +95,28 @@ The workflow accepts the following inputs via the Actions UI (Run workflow butto
 | `shard_cap` | 5, 10, 15, 20 | 10 | Maximum shards per org |
 | `repos_per_shard` | 25, 50, 75, 100 | 50 | Target repos per shard |
 
-#### Performance & Filtering
+#### Scan Strategies (Overridden by deep_scan)
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
 | `branch_strategy` | all, main-only, main-recent, protected | main-recent | Branch scanning strategy |
 | `scan_mode` | full, recent, incremental | recent | Commit scanning mode |
+| `branch_lookback_days` | 7, 14, 30, 60, 90 | 30 | Days to look back for "recent" branches (main-recent strategy) |
+| `scan_lookback_days` | 1, 3, 7, 14, 30 | 7 | Days to scan in recent/incremental mode |
 
-#### Advanced
+#### Advanced Configuration
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
+| `adaptive_timeout` | true/false | true | Automatically adjusts timeout by repo size (2-15m) |
+| `skip_stale_branches` | true/false | true | Skips branches not updated in 90+ days |
+| `max_finding_log_lines` | 50, 100, 300, 500, 1000 | 300 | Maximum sanitized finding lines to log |
 | `trufflehog_version` | version string | 3.90.6 | TruffleHog Docker image version |
 
-### Hardcoded Settings (Optimized Defaults)
+### Hardcoded Settings (Not Configurable via UI)
 
-These settings are no longer configurable via UI (due to 10-input GitHub Actions limit) but use performance-optimized defaults:
+These settings have fixed values optimized for most use cases:
 
 | Setting | Value | Description |
 |---------|-------|-------------|
-| `branch_lookback_days` | 30 | Days to look back for "recent" branches |
-| `scan_lookback_days` | 7 | Days to scan in recent/incremental mode |
-| `adaptive_timeout` | true | Automatically adjusts timeout by repo size (2-15m) |
-| `skip_stale_branches` | true | Skips branches not updated in 90+ days |
 | `enable_size_based_sharding` | false | Size-based load balancing (disabled by default) |
 | `max_repo_size_kb` | 0 | Repo size limit in KB (0 = unlimited) |
 
@@ -107,35 +124,58 @@ To change these settings, modify the workflow file directly (.github/workflows/t
 
 ### Configuration Examples
 
-These examples show how to configure the 10 available workflow inputs for different scanning scenarios.
+These examples show how to configure workflow inputs for different scanning scenarios.
 
 #### Daily Scans (Maximum Speed)
 ```yaml
 branch_strategy: main-only
 scan_mode: recent
+scan_lookback_days: 1
 scan_parallel: 16
 per_repo_timeout: 3m
+adaptive_timeout: true
 ```
 **Expected runtime**: 2-5 min for most orgs
+**Use case**: Quick daily checks for new secrets in main branch only
 
-#### Weekly Scans (Recommended - Uses Defaults)
+#### Weekly Scans (Recommended)
 ```yaml
 branch_strategy: main-recent
 scan_mode: recent
+scan_lookback_days: 7
+branch_lookback_days: 30
 scan_parallel: 12
+adaptive_timeout: true
+skip_stale_branches: true
 ```
 **Expected runtime**: 3-10 min for most orgs (RECOMMENDED)
-**Note**: Uses optimized defaults for all other settings
+**Use case**: Regular scanning of active development branches
+**Note**: Uses optimized defaults
 
-#### Monthly Deep Scans
+#### Monthly Deep Scans (Comprehensive)
+```yaml
+deep_scan: true
+per_repo_timeout: 10m
+scan_parallel: 8
+adaptive_timeout: true
+```
+**Expected runtime**: 15-45 min for most orgs
+**Use case**: Full audit of all branches and complete commit history
+**Note**: `deep_scan: true` automatically sets `branch_strategy: all`, `scan_mode: full`, and `skip_stale_branches: false`
+
+#### Custom Deep Scan (Without deep_scan Flag)
 ```yaml
 branch_strategy: all
 scan_mode: full
 per_repo_timeout: 10m
 scan_parallel: 8
+branch_lookback_days: 90
+scan_lookback_days: 30
+skip_stale_branches: false
+adaptive_timeout: true
 ```
-**Expected runtime**: 10-25 min for most orgs
-**Note**: Scans all branches and full commit history
+**Expected runtime**: 15-45 min for most orgs
+**Use case**: When you need granular control over deep scanning parameters
 
 #### Large Organization (1000+ repos)
 ```yaml
@@ -144,10 +184,25 @@ shard_cap: 20
 scan_parallel: 16
 branch_strategy: main-only
 scan_mode: recent
+scan_lookback_days: 3
 per_repo_timeout: 5m
+adaptive_timeout: true
 ```
 **Expected runtime**: 5-12 min
+**Use case**: Fast scanning of large organizations
 **Note**: To skip large repos, edit workflow file to change `max_repo_size_kb` from 0
+
+#### Initial Baseline Scan (First Run)
+```yaml
+deep_scan: true
+per_repo_timeout: 15m
+scan_parallel: 4
+adaptive_timeout: true
+max_finding_log_lines: 1000
+```
+**Expected runtime**: 30-90 min for most orgs
+**Use case**: Comprehensive initial scan to establish baseline
+**Note**: Lower parallelism to avoid rate limits on first run
 
 ## Architecture
 
@@ -482,27 +537,42 @@ docker run --rm -v "$PWD:/work" -w /work \
 ## Performance Tuning
 
 ### If Scans Are Too Slow
-1. **Reduce branch scope**: Use `main-only` strategy
-2. **Shorten time window**: Set `scan_lookback_days: 3`
-3. **Increase parallelism**: Set `scan_parallel: 16`
-4. **Enable size-based sharding**: Set `enable_size_based_sharding: true`
-5. **Skip large repos**: Set `max_repo_size_kb: 500000`
+1. **Reduce branch scope**: Use `branch_strategy: main-only`
+2. **Shorten time window**: Set `scan_lookback_days: 1` or `3`
+3. **Reduce branch lookback**: Set `branch_lookback_days: 7` or `14`
+4. **Increase parallelism**: Set `scan_parallel: 16`
+5. **Enable adaptive timeout**: Set `adaptive_timeout: true` (enabled by default)
+6. **Skip stale branches**: Ensure `skip_stale_branches: true` (enabled by default)
+7. **Skip large repos**: Edit workflow file to set `max_repo_size_kb: 500000`
 
 ### If Missing Findings
-1. **Expand branch scope**: Use `all` or `main-recent` strategy
-2. **Expand time window**: Set `scan_lookback_days: 30`
-3. **Include more results**: Set `scan_results: all`
-4. **Disable branch skipping**: Set `skip_stale_branches: false`
+1. **Use deep scan mode**: Set `deep_scan: true` for comprehensive scanning
+2. **Expand branch scope**: Use `branch_strategy: all` or `main-recent`
+3. **Expand time window**: Set `scan_lookback_days: 14` or `30`
+4. **Expand branch lookback**: Set `branch_lookback_days: 60` or `90`
+5. **Include more results**: Set `scan_results: all`
+6. **Disable branch skipping**: Set `skip_stale_branches: false`
+7. **Full history scan**: Set `scan_mode: full`
 
 ### If Hitting Rate Limits
 1. **Reduce concurrent scans**: Set `scan_parallel: 4`
 2. **Reduce shard count**: Set `shard_cap: 5`
 3. **Add delays**: The workflow has built-in rate limiting (4 calls/sec)
+4. **Stagger scan times**: Run scans at different times for different orgs
 
 ### Timeout Issues
-1. **Enable adaptive timeout**: Set `adaptive_timeout: true` (default)
-2. **Increase base timeout**: Set `per_repo_timeout: 10m`
-3. **Skip large repos**: Set `max_repo_size_kb: 100000`
+1. **Enable adaptive timeout**: Set `adaptive_timeout: true` (enabled by default)
+2. **Increase base timeout**: Set `per_repo_timeout: 10m` or `15m`
+3. **Skip large repos**: Edit workflow file to set `max_repo_size_kb: 100000`
+4. **Reduce scan scope**: Use `scan_mode: recent` with shorter `scan_lookback_days`
+
+### Deep Scan Best Practices
+When using `deep_scan: true`:
+1. **Run less frequently**: Monthly or quarterly, not daily
+2. **Increase timeout**: Set `per_repo_timeout: 10m` or `15m`
+3. **Reduce parallelism**: Set `scan_parallel: 4` or `8` to avoid rate limits
+4. **Monitor for timeouts**: Check logs and adjust timeout as needed
+5. **Expect longer runtime**: Budget 30-90 minutes for large organizations
 
 ## Monitoring
 
@@ -540,14 +610,27 @@ docker run --rm -v "$PWD:/work" -w /work \
 - Consider adding to `max_repo_size_kb` filter
 
 **Missing branches**
-- Check `branch_strategy` setting
-- Review `branch_lookback_days` value
-- Set `skip_stale_branches: false` to scan all
+- Check `branch_strategy` setting (try `all` or `main-recent`)
+- Review `branch_lookback_days` value (increase to 60 or 90)
+- Set `skip_stale_branches: false` to scan all branches
+- Consider using `deep_scan: true` for comprehensive coverage
+
+**Missing old commits**
+- Set `scan_mode: full` instead of `recent`
+- Increase `scan_lookback_days` to 14, 30, or more
+- Use `deep_scan: true` for complete history scan
 
 **Empty NDJSON files**
 - Check TruffleHog version compatibility
 - Verify repos aren't all archived/empty
-- Review `SCAN_RESULTS` environment variable
+- Review `scan_results` setting
+- Confirm time-based filters aren't excluding all commits
+
+**Deep scan taking too long**
+- Increase `per_repo_timeout` to 15m
+- Reduce `scan_parallel` to 4 or 8
+- Enable `adaptive_timeout: true`
+- Consider splitting into multiple smaller runs
 
 ## Additional Documentation
 
@@ -563,7 +646,28 @@ All comprehensive documentation is consolidated in this README for easier mainte
 
 ## Changelog
 
-### v2.1 (Current)
+### v2.2 (Current)
+- **Deep Scan Mode**: New `deep_scan` flag for comprehensive monthly/quarterly audits
+  - Automatically scans ALL branches and ALL commits (including commits older than 30 days)
+  - Overrides branch_strategy and scan_mode settings
+  - Disables stale branch filtering
+- **Fully Configurable Inputs**: All 17 parameters now configurable via workflow inputs
+  - `branch_lookback_days`: 7, 14, 30, 60, 90 days (was hardcoded to 30)
+  - `scan_lookback_days`: 1, 3, 7, 14, 30 days (was hardcoded to 7)
+  - `adaptive_timeout`: true/false (was hardcoded to true)
+  - `skip_stale_branches`: true/false (was hardcoded to true)
+  - `max_finding_log_lines`: 50-1000 lines (was hardcoded to 300)
+- **Enhanced Documentation**:
+  - Added 6 comprehensive configuration examples (daily, weekly, deep scan, etc.)
+  - Detailed deep scan best practices
+  - Expanded troubleshooting section
+  - Updated performance tuning guide
+- **Workflow Summary Enhancements**:
+  - New "Scan Configuration" section showing all active settings
+  - Context-aware messages for different scan modes
+  - Deep scan mode indicator with automatic override notifications
+
+### v2.1
 - **Comprehensive PAT documentation**: Fine-grained vs Classic tokens with detailed permissions
 - **Bug fixes**:
   - Fixed 10-input GitHub Actions limit (reduced from 16 inputs)

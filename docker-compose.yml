@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  web:
+    image: myapp:latest
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://dbuser:MyD@tab@se_P@ssw0rd_2024!@postgres:5432/myapp
+      - REDIS_URL=redis://:R3d1s_Pr0d_P@$$w0rd!@redis:6379/0
+      - AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE4
+      - AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY4
+      - STRIPE_SECRET_KEY=sk_live_51MNOPqrstuvwxyzABCDEF1234567890mnopqrstuvwxyzABCDEF1234567890
+      - GITHUB_TOKEN=ghp_KLMNOPQRSTUVWXYZabcdefghij1234567890
+      - SLACK_WEBHOOK=https://hooks.slack.com/services/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ba
+      - JWT_SECRET=My_JWT_$3cr3t_K3y_F0r_Pr0ducti0n_2024!
+      - SENDGRID_API_KEY=SG.mnopqrstuvwxyzabcd.efghijklMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ
+      - TWILIO_ACCOUNT_SID=ACmnopqrstuvwxyzabcdefghijklmn1234
+      - TWILIO_AUTH_TOKEN=mnopqrstuvwxyzabcdefghijklmn1234
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:14
+    environment:
+      - POSTGRES_PASSWORD=P0stgr3s_Su93r_S3cur3_P@$$w0rd!
+      - POSTGRES_USER=admin
+      - POSTGRES_DB=myapp
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass R3d1s_Pr0d_P@$$w0rd!
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
