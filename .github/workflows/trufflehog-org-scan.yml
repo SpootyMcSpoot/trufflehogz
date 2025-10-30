@@ -8,18 +8,8 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
-      target_org:
-        description: "Select target organization"
-        required: false
-        default: ""
-        type: choice
-        options:
-          - ""
-          - "your-org-name-1"
-          - "your-org-name-2"
-          - "your-org-name-3"
       org_names:
-        description: "Comma-separated list of orgs (for multiple orgs or custom names)"
+        description: "Comma-separated list of organizations to scan"
         required: false
         default: ""
         type: string
@@ -109,7 +99,6 @@ jobs:
     outputs:
       orgs_json: ${{ steps.set-matrix.outputs.orgs_json }}
     env:
-      TARGET_ORG: ${{ inputs.target_org }}
       INPUT_ORGS: ${{ inputs.org_names }}
       VAR_ORGS: ${{ vars.TRUFFLEHOG_ORGS }}
       DEFAULT_ORGS: ""
@@ -118,8 +107,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          ORG_LIST="${TARGET_ORG:-}"
-          if [ -z "${ORG_LIST}" ]; then ORG_LIST="${INPUT_ORGS:-}"; fi
+          ORG_LIST="${INPUT_ORGS:-}"
           if [ -z "${ORG_LIST}" ]; then ORG_LIST="${VAR_ORGS:-}"; fi
           if [ -z "${ORG_LIST}" ]; then ORG_LIST="${DEFAULT_ORGS}"; fi
           IFS=',' read -r -a ORGS_ARR <<< "${ORG_LIST}"

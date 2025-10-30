@@ -57,25 +57,22 @@ That's it! The workflow uses optimized defaults and runs **40-60% faster** than 
 - **Repos per Shard**: 50 (configurable 25-100)
 - **Concurrent Scans**: 8 per shard (configurable 4-16)
 - **Results Filter**: verified + unknown
-- **All Settings**: Fully configurable via 11 workflow inputs
+- **All Settings**: Fully configurable via 10 workflow inputs
 
 ## Configuration
 
-### Workflow Inputs (11 Total)
+### Workflow Inputs (10 Total)
 
 The workflow accepts the following inputs via the Actions UI (Run workflow button). All inputs are fully configurable.
-
-> **Note**: GitHub Actions has a limit of 10 inputs for workflow_dispatch. This workflow currently has 11 inputs (1 over the limit). To use this workflow, you may need to remove one input or merge `target_org` and `org_names` into a single input.
 
 #### Basic Configuration
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
-| `target_org` | dropdown | (empty) | Select a single target organization from predefined list |
-| `org_names` | comma-separated | (from var) | Organizations to scan (for multiple orgs or custom names) |
+| `org_names` | comma-separated | (from var) | Organizations to scan (supports single or multiple orgs) |
 | `open_issues` | true/false | false | Create GitHub issues for findings |
 | `issues_creation_orgs` | comma-separated | (empty) | Allowlist of orgs where issues should be created (empty = all orgs) |
 
-**Note**: The `target_org` dropdown takes priority over `org_names` and GitHub variables. Use `target_org` for quick selection of a single organization, or use `org_names` for multiple organizations or custom names. The `issues_creation_orgs` allowlist controls which organizations will have issues created when `open_issues` is true.
+**Note**: The `org_names` input takes priority over the `TRUFFLEHOG_ORGS` repository variable. The `issues_creation_orgs` allowlist controls which organizations will have issues created when `open_issues` is true.
 
 #### Deep Scan Mode
 | Input | Options | Default | Description |
@@ -382,22 +379,17 @@ After creating either token type, store it as a repository secret:
 
 ### 2. Organization Configuration
 
-**Option A: Dropdown Selection (Quickest)**
-1. Edit `.github/workflows/trufflehog-org-scan.yml`
-2. Update the `target_org` dropdown options with your organization names
-3. Select from dropdown when clicking "Run workflow"
-
-**Option B: Repository Variable (Recommended for defaults)**
+**Option A: Repository Variable (Recommended for defaults)**
 ```
 Repository Settings → Secrets and variables → Actions → Variables
 Name: TRUFFLEHOG_ORGS
 Value: org1,org2,org3
 ```
 
-**Option C: Manual Text Input**
-Use the `org_names` input when clicking "Run workflow" (supports comma-separated list)
+**Option B: Manual Text Input**
+Use the `org_names` input when clicking "Run workflow" (supports comma-separated list for single or multiple orgs)
 
-**Priority Order**: `target_org` dropdown > `org_names` text input > `TRUFFLEHOG_ORGS` variable
+**Priority Order**: `org_names` text input > `TRUFFLEHOG_ORGS` variable
 
 ### 3. False Positive Filtering (Optional)
 
