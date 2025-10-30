@@ -37,10 +37,10 @@ on:
           - "verified"
           - "verified,unknown"
           - "all"
-      trufflehog_version:
-        description: "TruffleHog Docker image version"
+      issues_creation_orgs:
+        description: "Comma-separated list of orgs where issues should be created (empty = all orgs)"
         required: false
-        default: "3.90.6"
+        default: ""
         type: string
       per_repo_timeout:
         description: "Timeout per repository"
@@ -109,9 +109,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TRUFFLEHOG_VERSION: "${{ inputs.trufflehog_version || '3.90.6' }}"
-  TRUFFLEHOG_IMAGE: "ghcr.io/trufflesecurity/trufflehog:${{ inputs.trufflehog_version || '3.90.6' }}"
-  TRUFFLEHOG_CACHE_FILE: ".trufflehog_cache/trufflehog-${{ inputs.trufflehog_version || '3.90.6' }}.tar"
+  TRUFFLEHOG_VERSION: "3.90.6"
+  TRUFFLEHOG_IMAGE: "ghcr.io/trufflesecurity/trufflehog:3.90.6"
+  TRUFFLEHOG_CACHE_FILE: ".trufflehog_cache/trufflehog-3.90.6.tar"
 
 jobs:
   resolve-matrix:
@@ -660,6 +660,7 @@ jobs:
       GH_PAT: ${{ secrets.GH_PAT }}
       RUN_URL: ${{ github.run_url }}
       OPEN_ISSUES: ${{ inputs.open_issues }}
+      ISSUES_CREATION_ORGS: ${{ inputs.issues_creation_orgs }}
     steps:
       - uses: actions/checkout@v4
 
@@ -692,7 +693,30 @@ jobs:
           if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
             echo "[${ORG}] No merged findings to summarize."
           fi
-          if [ "${OPEN_ISSUES}" = "true" ]; then DRY=""; else DRY="--dry-run"; fi
+          # Check if issues should be created for this org
+          CREATE_ISSUES="false"
+          if [ "${OPEN_ISSUES}" = "true" ]; then
+            if [ -z "${ISSUES_CREATION_ORGS}" ]; then
+              # Empty allowlist means create issues for all orgs
+              CREATE_ISSUES="true"
+              echo "[${ORG}] Issues will be created (allowlist empty = all orgs)"
+            else
+              # Check if current org is in the comma-separated allowlist
+              IFS=',' read -r -a ALLOWED_ORGS <<< "${ISSUES_CREATION_ORGS}"
+              for allowed_org in "${ALLOWED_ORGS[@]}"; do
+                allowed_org="$(echo "$allowed_org" | xargs)"  # trim whitespace
+                if [ "$allowed_org" = "${ORG}" ]; then
+                  CREATE_ISSUES="true"
+                  echo "[${ORG}] Issues will be created (org in allowlist)"
+                  break
+                fi
+              done
+              if [ "${CREATE_ISSUES}" != "true" ]; then
+                echo "[${ORG}] Issues will NOT be created (org not in allowlist: ${ISSUES_CREATION_ORGS})"
+              fi
+            fi
+          fi
+          if [ "${CREATE_ISSUES}" = "true" ]; then DRY=""; else DRY="--dry-run"; fi
           python3 trufflehog_scanner.py \
             --ndjson "findings-${ORG}-ALL.ndjson" \
             --errors-ndjson "errors-${ORG}-ALL.ndjson" \
