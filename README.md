@@ -68,8 +68,11 @@ The workflow accepts the following inputs via the Actions UI (Run workflow butto
 #### Basic Configuration
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
-| `org_names` | comma-separated | (from var) | Organizations to scan |
+| `target_org` | dropdown | (empty) | Select a single target organization from predefined list |
+| `org_names` | comma-separated | (from var) | Organizations to scan (for multiple orgs or custom names) |
 | `open_issues` | true/false | false | Create GitHub issues for findings |
+
+**Note**: The `target_org` dropdown takes priority over `org_names` and GitHub variables. Use `target_org` for quick selection of a single organization, or use `org_names` for multiple organizations or custom names.
 
 #### Deep Scan Mode
 | Input | Options | Default | Description |
@@ -376,15 +379,22 @@ After creating either token type, store it as a repository secret:
 
 ### 2. Organization Configuration
 
-**Option A: Repository Variable (Recommended)**
+**Option A: Dropdown Selection (Quickest)**
+1. Edit `.github/workflows/trufflehog-org-scan.yml`
+2. Update the `target_org` dropdown options with your organization names
+3. Select from dropdown when clicking "Run workflow"
+
+**Option B: Repository Variable (Recommended for defaults)**
 ```
 Repository Settings → Secrets and variables → Actions → Variables
 Name: TRUFFLEHOG_ORGS
 Value: org1,org2,org3
 ```
 
-**Option B: Manual Trigger**
-Use the `org_names` input when clicking "Run workflow"
+**Option C: Manual Text Input**
+Use the `org_names` input when clicking "Run workflow" (supports comma-separated list)
+
+**Priority Order**: `target_org` dropdown > `org_names` text input > `TRUFFLEHOG_ORGS` variable
 
 ### 3. False Positive Filtering (Optional)
 
