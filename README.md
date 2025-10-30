@@ -57,13 +57,15 @@ That's it! The workflow uses optimized defaults and runs **40-60% faster** than 
 - **Repos per Shard**: 50 (configurable 25-100)
 - **Concurrent Scans**: 8 per shard (configurable 4-16)
 - **Results Filter**: verified + unknown
-- **All Settings**: Fully configurable via 17 workflow inputs
+- **All Settings**: Fully configurable via 11 workflow inputs
 
 ## Configuration
 
-### Workflow Inputs (17 Total)
+### Workflow Inputs (11 Total)
 
 The workflow accepts the following inputs via the Actions UI (Run workflow button). All inputs are fully configurable.
+
+> **Note**: GitHub Actions has a limit of 10 inputs for workflow_dispatch. This workflow currently has 11 inputs (1 over the limit). To use this workflow, you may need to remove one input or merge `target_org` and `org_names` into a single input.
 
 #### Basic Configuration
 | Input | Options | Default | Description |
@@ -71,8 +73,9 @@ The workflow accepts the following inputs via the Actions UI (Run workflow butto
 | `target_org` | dropdown | (empty) | Select a single target organization from predefined list |
 | `org_names` | comma-separated | (from var) | Organizations to scan (for multiple orgs or custom names) |
 | `open_issues` | true/false | false | Create GitHub issues for findings |
+| `issues_creation_orgs` | comma-separated | (empty) | Allowlist of orgs where issues should be created (empty = all orgs) |
 
-**Note**: The `target_org` dropdown takes priority over `org_names` and GitHub variables. Use `target_org` for quick selection of a single organization, or use `org_names` for multiple organizations or custom names.
+**Note**: The `target_org` dropdown takes priority over `org_names` and GitHub variables. Use `target_org` for quick selection of a single organization, or use `org_names` for multiple organizations or custom names. The `issues_creation_orgs` allowlist controls which organizations will have issues created when `open_issues` is true.
 
 #### Deep Scan Mode
 | Input | Options | Default | Description |
@@ -112,7 +115,6 @@ The workflow accepts the following inputs via the Actions UI (Run workflow butto
 | `adaptive_timeout` | true/false | true | Automatically adjusts timeout by repo size (2-15m) |
 | `skip_stale_branches` | true/false | true | Skips branches not updated in 90+ days |
 | `max_finding_log_lines` | 50, 100, 300, 500, 1000 | 300 | Maximum sanitized finding lines to log |
-| `trufflehog_version` | version string | 3.90.6 | TruffleHog Docker image version |
 
 ### Hardcoded Settings (Not Configurable via UI)
 
@@ -120,6 +122,7 @@ These settings have fixed values optimized for most use cases:
 
 | Setting | Value | Description |
 |---------|-------|-------------|
+| `trufflehog_version` | 3.90.6 | TruffleHog Docker image version (hardcoded) |
 | `enable_size_based_sharding` | false | Size-based load balancing (disabled by default) |
 | `max_repo_size_kb` | 0 | Repo size limit in KB (0 = unlimited) |
 
@@ -486,7 +489,11 @@ After each run, you'll see a comprehensive summary:
   - Severity: `sec:low`, `sec:medium`, `sec:high`, `sec:critical`
 
 ### Enable Issue Creation
-Set `open_issues: true` in workflow input (default is `false` for dry-run)
+1. Set `open_issues: true` in workflow input (default is `false` for dry-run)
+2. Optionally, set `issues_creation_orgs` to a comma-separated list of organizations where issues should be created
+   - If empty (default): Issues will be created for all scanned organizations
+   - If specified: Issues will only be created for organizations in the allowlist
+   - Example: `org1,org2,org3` will only create issues for those three orgs
 
 ### Issue Format
 ```markdown
