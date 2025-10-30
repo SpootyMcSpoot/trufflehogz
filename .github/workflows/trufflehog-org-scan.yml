@@ -42,16 +42,6 @@ on:
         required: false
         default: ""
         type: string
-      per_repo_timeout:
-        description: "Timeout per repository"
-        required: false
-        default: "5m"
-        type: choice
-        options:
-          - "3m"
-          - "5m"
-          - "10m"
-          - "15m"
       branch_strategy:
         description: "Branch scanning strategy"
         required: false
@@ -277,7 +267,7 @@ jobs:
       API: https://api.github.com
       SCAN_HISTORY: "true"
       ALL_HEADS: "true"
-      PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || '5m' }}
+      PER_REPO_TIMEOUT: "5m"
       SCAN_PAR: "8"
       MAX_REPO_SIZE_KB: "0"
       SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
@@ -765,7 +755,7 @@ jobs:
           ORGS_JSON: ${{ needs.plan.outputs.orgs_json }}
           OPEN_ISSUES: ${{ inputs.open_issues }}
           SCAN_PAR: "8"
-          PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || '5m' }}
+          PER_REPO_TIMEOUT: "5m"
           SHARD_CAP: "10"
           REPOS_PER_SHARD: "50"
           SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
