@@ -544,86 +544,91 @@ git commit -m "Remove hardcoded secret, use environment variable"
 
 **CRITICAL**: Rewriting git history is a destructive operation. Coordinate with your team and ensure everyone is aware.
 
-#### Option A: git-filter-repo (Recommended)
+Choose the appropriate method based on when the secret was committed:
 
-[git-filter-repo](https://github.com/newren/git-filter-repo) is the modern, fast replacement for git-filter-branch.
+#### For Recent Commits (Simplest - Use This When Possible)
+
+If the secret was committed recently (last few commits), use interactive rebase:
 
 ```bash
-# Install git-filter-repo
-# macOS:
+# View recent commits to find the one with the secret
+git log --oneline -10
+
+# Interactive rebase to edit/remove commits
+# Replace N with number of commits to go back
+git rebase -i HEAD~N
+
+# In the editor, change 'pick' to 'drop' for commits to remove
+# Or change to 'edit' to modify the commit
+# Save and close
+
+# If you chose 'edit', make your changes now:
+vim path/to/file-with-secret.py
+git add path/to/file-with-secret.py
+git rebase --continue
+
+# Force push to remote (see step 4 below)
+```
+
+**Alternative for very recent commits**: If the secret is only in the last unpushed commit, simply amend:
+
+```bash
+# Fix the file
+vim path/to/file-with-secret.py
+git add path/to/file-with-secret.py
+
+# Amend the last commit
+git commit --amend --no-edit
+```
+
+#### For Old or Complex History (Industry Standard: git-filter-repo)
+
+For secrets deep in history or across multiple branches, use [git-filter-repo](https://github.com/newren/git-filter-repo) - the official Git-recommended tool that replaced git-filter-branch.
+
+**Installation:**
+```bash
+# macOS
 brew install git-filter-repo
 
-# Linux (Debian/Ubuntu):
+# Linux (Debian/Ubuntu)
 sudo apt-get install git-filter-repo
 
-# Or via pip:
+# Or via pip
 pip install git-filter-repo
+```
 
-# Create a backup first
-git clone your-repo your-repo-backup
+**Usage:**
+```bash
+# ALWAYS create a backup first
+git clone https://github.com/org/repo.git repo-backup
+cd repo
 
-# Remove a specific file from all history
+# Method 1: Remove a specific file from all history
 git filter-repo --path path/to/secret-file.py --invert-paths
 
-# Or replace text across all history (e.g., replace API key with placeholder)
-echo 'sk-live-abc123xyz==>REDACTED' > replacements.txt
-git filter-repo --replace-text replacements.txt
+# Method 2: Replace text across all history (recommended for secrets in code)
+echo 'sk-live-abc123xyz==>REDACTED' > /tmp/replacements.txt
+git filter-repo --replace-text /tmp/replacements.txt
+
+# Method 3: Multiple text replacements
+cat > /tmp/replacements.txt <<EOF
+sk-live-abc123xyz==>REDACTED
+ghp_OldToken123456789==>REDACTED
+AKIA1234EXAMPLEKEY==>REDACTED
+EOF
+git filter-repo --replace-text /tmp/replacements.txt
 
 # Verify the secret is gone
-git log --all --full-history --source -- path/to/secret-file.py
+git log --all --oneline --source -S 'sk-live-abc123xyz'
+# Should return no results
 ```
 
-#### Option B: BFG Repo-Cleaner (Fast and Simple)
-
-[BFG Repo-Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) is faster than git-filter-branch for common tasks.
-
-```bash
-# Install BFG
-# macOS:
-brew install bfg
-
-# Or download JAR:
-# wget https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar
-
-# Create a backup first
-git clone --mirror your-repo.git your-repo-backup.git
-
-# Clone a fresh mirror
-git clone --mirror https://github.com/org/repo.git
-
-# Remove file from history
-bfg --delete-files secret-file.py repo.git
-
-# Or replace text (create passwords.txt with secrets to replace)
-echo 'sk-live-abc123xyz' > passwords.txt
-bfg --replace-text passwords.txt repo.git
-
-# Cleanup and verify
-cd repo.git
-git reflog expire --expire=now --all
-git gc --prune=now --aggressive
-```
-
-#### Option C: git filter-branch (Legacy, Slower)
-
-Only use if git-filter-repo is not available.
-
-```bash
-# Remove a file from all history
-git filter-branch --force --index-filter \
-  'git rm --cached --ignore-unmatch path/to/secret-file.py' \
-  --prune-empty --tag-name-filter cat -- --all
-
-# Or replace text in all history
-git filter-branch --tree-filter \
-  'find . -type f -exec sed -i "s/sk-live-abc123xyz/REDACTED/g" {} +' \
-  --tag-name-filter cat -- --all
-
-# Cleanup refs
-git for-each-ref --format='delete %(refname)' refs/original | git update-ref --stdin
-git reflog expire --expire=now --all
-git gc --prune=now --aggressive
-```
+**Why git-filter-repo?**
+- Official replacement for git-filter-branch (deprecated since Git 2.38)
+- 10-100x faster than git-filter-branch
+- Safer: catches common mistakes and pitfalls
+- Better for large repositories
+- Actively maintained and recommended by Git developers
 
 ### 4. Force Push and Notify Team
 
@@ -707,8 +712,8 @@ After cleaning git history:
 
 **⚠️ Large Repositories**
 - History rewriting can take significant time (hours for large repos)
-- Test the process on a mirror first
-- Consider using BFG or git-filter-repo for better performance
+- Test the process on a mirror/backup first
+- git-filter-repo is optimized for large repositories (10-100x faster than legacy tools)
 
 **⚠️ Protected Branches**
 - Temporarily disable branch protection rules to force push
