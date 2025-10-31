@@ -703,7 +703,7 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
         return False
     return True
 
-def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str) -> str:
+def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
     header = [
         f"Automated TruffleHog (OSS) scan found {len(items)} verified secret(s) in this repository.",
         "",
@@ -722,13 +722,29 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str) -> st
         link = line_link(repo, sha, path, ln)
         ln_str = str(ln) if ln is not None else ""
         rows.append(f"| {it.get('detector','')} | `{path}` | {ln_str} | {link} |")
+
+    # Build remediation guide link if scanner_repo is provided
+    remediation_link = ""
+    if scanner_repo:
+        remediation_link = f"https://github.com/{scanner_repo}/blob/main/README.md#remediating-discovered-secrets"
+
     guidance = [
         "",
-        "Next steps",
-        "- Rotate or revoke affected credentials.",
-        "- Remove the secret and rewrite history if needed (for example, BFG or git filter-repo).",
-        "- Add pre-commit and CI secret scanning gates to prevent reintroduction.",
+        "## Next steps",
+        "1. **Rotate or revoke affected credentials immediately** (assume they are compromised)",
+        "2. **Remove the secret from current files** and commit the change",
+        "3. **Purge the secret from git history** using modern tools:",
+        "   - For recent commits: Use interactive rebase (`git rebase -i`)",
+        "   - For old/complex history: Use git-filter-repo (industry standard)",
+        "4. **Force push** to remote and notify your team",
+        "5. **Add prevention measures**: pre-commit hooks, secrets managers, GitHub push protection",
+        "",
     ]
+
+    if remediation_link:
+        guidance.append(f"📖 **[Complete remediation guide with examples]({remediation_link})**")
+        guidance.append("")
+
     return "\n".join([s for s in header if s != ""] + rows + guidance)
 
 def process_repo(repo: str,
@@ -737,7 +753,8 @@ def process_repo(repo: str,
                  title_prefix: str,
                  run_url: str,
                  extra_labels: Optional[List[str]],
-                 dry_run: bool) -> Tuple[str, bool]:
+                 dry_run: bool,
+                 scanner_repo: str = "") -> Tuple[str, bool]:
     logging.info("Processing repo %s with %d finding(s)", repo, len(items))
     meta = gh.repo_meta(repo)
     if not repo_is_actionable(meta):
@@ -763,7 +780,7 @@ def process_repo(repo: str,
     except HTTPError as e:
         logging.warning("Skipping label creation in %s due to HTTP %d; continuing to issue body.", repo, e.code)
 
-    body = build_issue_body(repo, items, run_url)
+    body = build_issue_body(repo, items, run_url, scanner_repo)
     try:
         created = gh.create_issue(repo, title, body, auto) or {}
         issue_number = created.get("number")
@@ -804,6 +821,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ndjson", default="findings.ndjson")
     p.add_argument("--run-url", default="")
+    p.add_argument("--scanner-repo", default="", help="GitHub repository with remediation docs (org/repo)")
     p.add_argument("--max-workers", type=int, default=0)
     p.add_argument("--labels", default="")
     p.add_argument("--dry-run", action="store_true")
@@ -901,7 +919,7 @@ def main() -> int:
         futures = []
         for repo, items in findings.items():
             futures.append(pool.submit(
-                process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run
+                process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run, args.scanner_repo
             ))
         for fut in cf.as_completed(futures):
             try:

@@ -705,6 +705,7 @@ jobs:
             --summary-detailed-per-repo 9999 \
             --summary-detailed-max 5000 \
             --run-url "$RUN_URL" \
+            --scanner-repo "${{ github.repository }}" \
             --exclude-patterns-file .github/trufflehog/false_positives.txt \
             --max-workers 8 \
             --log-level INFO \

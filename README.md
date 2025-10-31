@@ -493,7 +493,7 @@ Automated TruffleHog (OSS) scan found 2 verified secret(s) in this repository.
 
 Scan run: https://github.com/.../actions/runs/...
 
-> Do not paste secrets in this issue. Rotate or revoke credentials and clean history.
+> Do not paste secrets in this issue. Rotate or revoke credentials and clean history as appropriate.
 
 | Detector | File | Line | Link |
 |---|---|---:|---|
@@ -501,10 +501,18 @@ Scan run: https://github.com/.../actions/runs/...
 | GitHub | `scripts/deploy.sh` | 88 | https://... |
 
 ## Next steps
-- Rotate or revoke affected credentials
-- Remove the secret and rewrite history if needed
-- Add pre-commit and CI secret scanning gates
+1. **Rotate or revoke affected credentials immediately** (assume they are compromised)
+2. **Remove the secret from current files** and commit the change
+3. **Purge the secret from git history** using modern tools:
+   - For recent commits: Use interactive rebase (`git rebase -i`)
+   - For old/complex history: Use git-filter-repo (industry standard)
+4. **Force push** to remote and notify your team
+5. **Add prevention measures**: pre-commit hooks, secrets managers, GitHub push protection
+
+📖 **[Complete remediation guide with examples](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)**
 ```
+
+**Note**: The issue automatically includes a link to the complete remediation guide in this repository with detailed examples for both methods (interactive rebase and git-filter-repo).
 
 ## Remediating Discovered Secrets
 
