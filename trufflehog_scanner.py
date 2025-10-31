@@ -730,19 +730,16 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
 
     guidance = [
         "",
-        "## Next steps",
-        "1. **Rotate or revoke affected credentials immediately** (assume they are compromised)",
-        "2. **Remove the secret from current files** and commit the change",
-        "3. **Purge the secret from git history** using modern tools:",
-        "   - For recent commits: Use interactive rebase (`git rebase -i`)",
-        "   - For old/complex history: Use git-filter-repo (industry standard)",
-        "4. **Force push** to remote and notify your team",
-        "5. **Add prevention measures**: pre-commit hooks, secrets managers, GitHub push protection",
+        "## How to fix",
+        "**1. Rotate the secret immediately** (assume compromised)",
+        "**2. Remove from git history:**",
+        "   - Recent commits: `git rebase -i HEAD~5` (edit/drop commits with secrets)",
+        "   - Old commits: `git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')`",
         "",
     ]
 
     if remediation_link:
-        guidance.append(f"📖 **[Complete remediation guide with examples]({remediation_link})**")
+        guidance.append(f"📖 [Full remediation guide]({remediation_link})")
         guidance.append("")
 
     return "\n".join([s for s in header if s != ""] + rows + guidance)

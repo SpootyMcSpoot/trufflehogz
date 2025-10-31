@@ -500,19 +500,16 @@ Scan run: https://github.com/.../actions/runs/...
 | AWS | `config.py` | 42 | https://... |
 | GitHub | `scripts/deploy.sh` | 88 | https://... |
 
-## Next steps
-1. **Rotate or revoke affected credentials immediately** (assume they are compromised)
-2. **Remove the secret from current files** and commit the change
-3. **Purge the secret from git history** using modern tools:
-   - For recent commits: Use interactive rebase (`git rebase -i`)
-   - For old/complex history: Use git-filter-repo (industry standard)
-4. **Force push** to remote and notify your team
-5. **Add prevention measures**: pre-commit hooks, secrets managers, GitHub push protection
+## How to fix
+**1. Rotate the secret immediately** (assume compromised)
+**2. Remove from git history:**
+   - Recent commits: `git rebase -i HEAD~5` (edit/drop commits with secrets)
+   - Old commits: `git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')`
 
-📖 **[Complete remediation guide with examples](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)**
+📖 [Full remediation guide](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)
 ```
 
-**Note**: The issue automatically includes a link to the complete remediation guide in this repository with detailed examples for both methods (interactive rebase and git-filter-repo).
+**Note**: Issues provide simple one-liner commands to fix the problem, plus a link to the complete remediation guide for detailed instructions.
 
 ## Remediating Discovered Secrets
 
