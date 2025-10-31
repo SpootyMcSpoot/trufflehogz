@@ -506,6 +506,238 @@ Scan run: https://github.com/.../actions/runs/...
 - Add pre-commit and CI secret scanning gates
 ```
 
+## Remediating Discovered Secrets
+
+When TruffleHog discovers secrets in your repository, follow these steps to properly remediate them:
+
+### 1. Immediate Response (Critical: Do This First)
+
+**Rotate or Revoke Credentials Immediately**
+- **Before** cleaning git history, assume the secret is already compromised
+- Rotate API keys, passwords, tokens, or certificates
+- Revoke the compromised credentials in the service provider's dashboard
+- Generate new credentials and store them securely (use a secrets manager)
+
+**Examples:**
+- AWS: Deactivate and delete the IAM access key, create a new one
+- GitHub: Revoke the personal access token, generate a new one
+- Database passwords: Change the password immediately
+- API keys: Regenerate the key in the provider's dashboard
+
+### 2. Remove Secrets from Current Files
+
+Remove the secret from your current working tree:
+
+```bash
+# Edit the file and remove the secret
+vim path/to/file-with-secret.py
+
+# Or replace the secret with a placeholder/environment variable
+sed -i 's/sk-live-abc123xyz/os.getenv("API_KEY")/g' config.py
+
+# Commit the change
+git add path/to/file-with-secret.py
+git commit -m "Remove hardcoded secret, use environment variable"
+```
+
+### 3. Purge Secrets from Git History
+
+**CRITICAL**: Rewriting git history is a destructive operation. Coordinate with your team and ensure everyone is aware.
+
+#### Option A: git-filter-repo (Recommended)
+
+[git-filter-repo](https://github.com/newren/git-filter-repo) is the modern, fast replacement for git-filter-branch.
+
+```bash
+# Install git-filter-repo
+# macOS:
+brew install git-filter-repo
+
+# Linux (Debian/Ubuntu):
+sudo apt-get install git-filter-repo
+
+# Or via pip:
+pip install git-filter-repo
+
+# Create a backup first
+git clone your-repo your-repo-backup
+
+# Remove a specific file from all history
+git filter-repo --path path/to/secret-file.py --invert-paths
+
+# Or replace text across all history (e.g., replace API key with placeholder)
+echo 'sk-live-abc123xyz==>REDACTED' > replacements.txt
+git filter-repo --replace-text replacements.txt
+
+# Verify the secret is gone
+git log --all --full-history --source -- path/to/secret-file.py
+```
+
+#### Option B: BFG Repo-Cleaner (Fast and Simple)
+
+[BFG Repo-Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) is faster than git-filter-branch for common tasks.
+
+```bash
+# Install BFG
+# macOS:
+brew install bfg
+
+# Or download JAR:
+# wget https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar
+
+# Create a backup first
+git clone --mirror your-repo.git your-repo-backup.git
+
+# Clone a fresh mirror
+git clone --mirror https://github.com/org/repo.git
+
+# Remove file from history
+bfg --delete-files secret-file.py repo.git
+
+# Or replace text (create passwords.txt with secrets to replace)
+echo 'sk-live-abc123xyz' > passwords.txt
+bfg --replace-text passwords.txt repo.git
+
+# Cleanup and verify
+cd repo.git
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+```
+
+#### Option C: git filter-branch (Legacy, Slower)
+
+Only use if git-filter-repo is not available.
+
+```bash
+# Remove a file from all history
+git filter-branch --force --index-filter \
+  'git rm --cached --ignore-unmatch path/to/secret-file.py' \
+  --prune-empty --tag-name-filter cat -- --all
+
+# Or replace text in all history
+git filter-branch --tree-filter \
+  'find . -type f -exec sed -i "s/sk-live-abc123xyz/REDACTED/g" {} +' \
+  --tag-name-filter cat -- --all
+
+# Cleanup refs
+git for-each-ref --format='delete %(refname)' refs/original | git update-ref --stdin
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+```
+
+### 4. Force Push and Notify Team
+
+**WARNING**: Force pushing rewrites history. Ensure all team members are aware and prepared.
+
+```bash
+# Force push to remote (this will rewrite history on remote)
+git push origin --force --all
+git push origin --force --tags
+
+# Notify all team members to re-clone or reset their local copies
+```
+
+**Team members should:**
+```bash
+# Option 1: Delete and re-clone (safest)
+cd ..
+rm -rf old-repo
+git clone https://github.com/org/repo.git
+
+# Option 2: Reset local repo (be careful, loses local changes)
+git fetch origin
+git reset --hard origin/main  # or your branch name
+git clean -fdx
+```
+
+### 5. Post-Remediation Steps
+
+After cleaning git history:
+
+1. **Verify the secret is gone**: Run TruffleHog again on the cleaned repo
+   ```bash
+   docker run --rm -v "$PWD:/work" -w /work \
+     ghcr.io/trufflesecurity/trufflehog:3.90.6 \
+     git file:///work --only-verified
+   ```
+
+2. **Invalidate GitHub's cache** (for public repos): Contact GitHub Support to purge cached refs
+
+3. **Update protection rules**:
+   - Add the file/pattern to `.gitignore` if it shouldn't be tracked
+   - Set up pre-commit hooks to prevent future secret commits
+   - Enable GitHub secret scanning and push protection
+
+4. **Add prevention measures**:
+   ```bash
+   # Install pre-commit hook with TruffleHog
+   pip install pre-commit
+
+   # Create .pre-commit-config.yaml
+   cat > .pre-commit-config.yaml <<EOF
+   repos:
+     - repo: https://github.com/trufflesecurity/trufflehog
+       rev: v3.90.6
+       hooks:
+         - id: trufflehog
+           name: TruffleHog Secret Scan
+           entry: trufflehog git file://. --since-commit HEAD --only-verified --fail
+   EOF
+
+   # Install the hook
+   pre-commit install
+   ```
+
+5. **Monitor for exposure**:
+   - Check if the secret was exposed in any forks
+   - Monitor audit logs for unauthorized usage
+   - Review access logs for suspicious activity
+
+### Important Considerations
+
+**⚠️ Public Repositories**
+- Once pushed to a public repo, assume the secret was harvested by bots
+- Secrets can persist in forks even after you clean your history
+- Contact GitHub Support to purge cached views of commits
+
+**⚠️ Private Repositories**
+- Secrets may still be visible to anyone who had access
+- Check who cloned the repo while the secret was exposed
+- Consider if any CI/CD logs or artifacts contain the secret
+
+**⚠️ Large Repositories**
+- History rewriting can take significant time (hours for large repos)
+- Test the process on a mirror first
+- Consider using BFG or git-filter-repo for better performance
+
+**⚠️ Protected Branches**
+- Temporarily disable branch protection rules to force push
+- Re-enable protection immediately after pushing
+
+### Alternative: Secrets Management
+
+To prevent secrets from entering git in the first place:
+
+```bash
+# Use environment variables
+export DATABASE_PASSWORD="secret"
+python app.py
+
+# Use a .env file (add to .gitignore)
+echo "DATABASE_PASSWORD=secret" > .env
+echo ".env" >> .gitignore
+
+# Use a secrets manager
+# AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, etc.
+```
+
+**Best practices:**
+- Store secrets in environment variables or secrets managers
+- Use GitHub Secrets for Actions workflows
+- Never commit `.env` files (add to `.gitignore`)
+- Use placeholder values in example/template files
+- Enable GitHub's push protection for secret scanning
+
 ## Testing
 
 ### Manual Workflow Run
