@@ -275,13 +275,20 @@ def shortpath(p: str) -> str:
     return ".../" + "/".join(parts[-3:])
 
 def line_link(repo: str, commit: Optional[str], path: str, line: Optional[int]) -> str:
+    """
+    Generate a GitHub link to the file WITHOUT line anchor.
+
+    SECURITY: We intentionally omit the #L{line} anchor to prevent GitHub from
+    automatically showing code previews that would expose the secret in the issue.
+    Users can still find the exact line by looking at the Line column in the table.
+    """
     if repo and path:
         quoted = urlquote(path, safe="/")
-        anchor = f"#L{line}" if line else ""
+        # NOTE: No line anchor to prevent GitHub's auto code preview
         if commit:
-            return f"https://github.com/{repo}/blob/{commit}/{quoted}{anchor}"
+            return f"https://github.com/{repo}/blob/{commit}/{quoted}"
         else:
-            return f"https://github.com/{repo}/blob/HEAD/{quoted}{anchor}"
+            return f"https://github.com/{repo}/blob/HEAD/{quoted}"
     if repo and commit:
         return f"https://github.com/{repo}/commit/{commit}"
     return ""
@@ -704,12 +711,16 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
     return True
 
 def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
+    count_text = "1 verified secret" if len(items) == 1 else f"{len(items)} verified secrets"
     header = [
-        f"Automated TruffleHog (OSS) scan found {len(items)} verified secret(s) in this repository.",
+        f"## 🔐 Secret Detection Alert",
         "",
-        f"Scan run: {run_url}" if run_url else "",
+        f"**Status**: {count_text} found in this repository",
+        f"**Scan**: [View workflow run]({run_url})" if run_url else "",
         "",
-        "> Do not paste secrets in this issue. Rotate or revoke credentials and clean history as appropriate.",
+        "> ⚠️ **SECURITY NOTICE**: Do not paste secret values in this issue. All secrets below should be considered compromised.",
+        "",
+        "### Findings",
         "",
         "| Detector | File | Line | Link |",
         "|---|---|---:|---|",
@@ -719,9 +730,13 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         path = it.get("file", "") or ""
         ln = it.get("line")
         sha = it.get("commit")
-        link = line_link(repo, sha, path, ln)
+        link_url = line_link(repo, sha, path, ln)
         ln_str = str(ln) if ln is not None else ""
-        rows.append(f"| {it.get('detector','')} | `{path}` | {ln_str} | {link} |")
+
+        # Format link as markdown to make it clickable
+        link_display = f"[View]({link_url})" if link_url else ""
+
+        rows.append(f"| {it.get('detector','')} | `{path}` | {ln_str} | {link_display} |")
 
     # Build remediation guide link if scanner_repo is provided
     remediation_link = ""
@@ -730,17 +745,43 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
 
     guidance = [
         "",
-        "## How to fix",
-        "**1. Rotate the secret immediately** (assume compromised)",
-        "**2. Remove from git history:**",
-        "   - Recent commits: `git rebase -i HEAD~5` (edit/drop commits with secrets)",
-        "   - Old commits: `git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')`",
+        "---",
+        "",
+        "## 🛠️ Remediation Steps",
+        "",
+        "### Step 1: Rotate/Revoke Immediately",
+        "**Assume all secrets above are compromised.** Rotate or revoke them in your service provider:",
+        "- GitHub tokens: [Settings → Developer settings → Personal access tokens]" + "(https://github.com/settings/tokens)",
+        "- AWS keys: Use AWS IAM Console",
+        "- Other services: Check your provider's credential management",
+        "",
+        "### Step 2: Remove from Git History",
+        "**Recent commits** (last few commits):",
+        "```bash",
+        "git rebase -i HEAD~5  # Edit/drop commits containing secrets",
+        "```",
+        "",
+        "**Older commits** (anywhere in history):",
+        "```bash",
+        "# Install git-filter-repo first: pip install git-filter-repo",
+        "git filter-repo --replace-text <(echo 'YOUR_SECRET_HERE==>REDACTED')",
+        "```",
+        "",
+        "### Step 3: Force Push & Notify Team",
+        "```bash",
+        "git push --force-with-lease",
+        "```",
+        "⚠️ Coordinate with your team before force-pushing to shared branches.",
         "",
     ]
 
     if remediation_link:
-        guidance.append(f"📖 [Full remediation guide]({remediation_link})")
-        guidance.append("")
+        guidance.extend([
+            "### Additional Resources",
+            f"- 📖 [Complete remediation guide]({remediation_link})",
+            f"- 🔒 [GitHub secret scanning documentation](https://docs.github.com/en/code-security/secret-scanning)",
+            "",
+        ])
 
     return "\n".join([s for s in header if s != ""] + rows + guidance)
 
