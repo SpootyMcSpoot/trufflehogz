@@ -404,30 +404,71 @@ class GHClient:
             return None
 
     def search_issue_by_title(self, repo: str, title: str) -> bool:
-        """Search for an open issue by exact title match."""
-        q = f'repo:{repo} in:title "{title}" state:open'
-        path = f"/search/issues?q={quote_plus(q)}&per_page=1"
+        """
+        Search for an open issue by exact title match using Issues API.
+
+        Note: Uses /repos/{repo}/issues instead of /search/issues because
+        fine-grained PATs may not have access to the Search API.
+        """
         try:
-            data = self.call("GET", path, None)
-            return bool(data.get("total_count", 0))
+            # List open issues and filter by title (API doesn't support title filtering)
+            # We only check the first page (30 issues) to avoid excessive API calls
+            data = self.call("GET", f"/repos/{repo}/issues?state=open&per_page=30", None)
+            if isinstance(data, list):
+                for issue in data:
+                    if isinstance(issue, dict) and issue.get("title") == title:
+                        logging.info("Found existing open issue in %s with title: %s", repo, title)
+                        return True
+            return False
         except HTTPError as e:
-            logging.warning("Failed to search issues in %s: HTTP %d (may create duplicate)", repo, e.code)
+            logging.warning("Failed to list issues in %s: HTTP %d (may create duplicate)", repo, e.code)
             return False
 
     def search_recent_issues(self, repo: str, title_pattern: str, days: int = DEFAULT_ISSUE_DEDUP_DAYS) -> bool:
-        """Search for recent issues matching a title pattern (partial match)."""
+        """
+        Search for recent issues matching a title pattern using Issues API.
+
+        Note: Uses /repos/{repo}/issues instead of /search/issues because
+        fine-grained PATs may not have access to the Search API.
+        """
         import datetime
-        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-        q = f'repo:{repo} in:title "{title_pattern}" state:open created:>={cutoff_date}'
-        path = f"/search/issues?q={quote_plus(q)}&per_page=5"
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
         try:
-            data = self.call("GET", path, None)
-            count = data.get("total_count", 0)
-            if count > 0:
-                logging.info("Found %d recent open issue(s) in %s matching '%s'", count, repo, title_pattern)
-            return count > 0
+            # List open issues sorted by created date
+            # Check first 2 pages (60 issues) for recent matches
+            for page in [1, 2]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=open&sort=created&direction=desc&per_page=30&page={page}", None)
+                if not isinstance(data, list):
+                    break
+
+                for issue in data:
+                    if not isinstance(issue, dict):
+                        continue
+
+                    # Check if title matches pattern
+                    issue_title = issue.get("title", "")
+                    if title_pattern not in issue_title:
+                        continue
+
+                    # Check if within date range
+                    created_at = issue.get("created_at", "")
+                    if created_at:
+                        try:
+                            created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            if created >= cutoff:
+                                logging.info("Found recent open issue in %s matching '%s' (created %s)",
+                                           repo, title_pattern, created_at)
+                                return True
+                        except (ValueError, AttributeError):
+                            pass
+
+                # If we got fewer than 30 results, no need to check next page
+                if len(data) < 30:
+                    break
+
+            return False
         except HTTPError as e:
-            logging.warning("Failed to search recent issues in %s: HTTP %d", repo, e.code)
+            logging.warning("Failed to list recent issues in %s: HTTP %d", repo, e.code)
             return False
 
     def get_labels(self, repo: str) -> List[str]:
