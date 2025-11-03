@@ -511,15 +511,12 @@ jobs:
             # Calculate timeout for this repo
             local timeout=$(calc_timeout "${repo_size}")
 
-            echo "[${ORG}] scanning ${full} (size: ${repo_size}KB, timeout: ${timeout})"
+            echo "[${ORG}] scanning ${full} (size: ${repo_size}KB, timeout: ${timeout}, mode: ${SCAN_MODE})"
 
-            # Prepare time-based scanning flags
-            local TIME_FLAGS=()
-            if [ "${SCAN_MODE}" = "recent" ] || [ "${SCAN_MODE}" = "incremental" ]; then
-              local since_date=$(date -u -d "${SCAN_LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
-              TIME_FLAGS+=( "--since" "${since_date}" )
-              echo "[${ORG}] ${full} scanning since ${since_date}"
-            fi
+            # NOTE: TruffleHog doesn't support date-based --since filtering
+            # It only supports --since-commit with commit references (branch names/hashes)
+            # For comprehensive security scanning, we scan full history
+            # To use commit-based filtering, add: --since-commit main --branch <branch-name>
 
             branches_found="$(list_branches_api "${full}")"
             if [ "${ALL_HEADS}" = "true" ] && [ "${branches_found}" = "1" ]; then
@@ -529,7 +526,7 @@ jobs:
                 timeout --kill-after=30s "${timeout}" docker run --rm \
                   -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
                   -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${REPO_URL}" \
-                  --branch "$br" "${EXTRA_FLAGS[@]}" "${TIME_FLAGS[@]}" >> "$out" 2>> "$err" || {
+                  --branch "$br" "${EXTRA_FLAGS[@]}" >> "$out" 2>> "$err" || {
                     local exit_code=$?
                     if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
                       echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"branch\":\"${br}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
@@ -541,7 +538,7 @@ jobs:
               timeout --kill-after=30s "${timeout}" docker run --rm \
                 -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
                 -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${REPO_URL}" \
-                "${EXTRA_FLAGS[@]}" "${TIME_FLAGS[@]}" > "$out" 2> "$err" || {
+                "${EXTRA_FLAGS[@]}" > "$out" 2> "$err" || {
                   local exit_code=$?
                   if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
                     echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
