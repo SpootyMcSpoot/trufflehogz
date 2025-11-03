@@ -670,6 +670,9 @@ jobs:
           set -Eeuo pipefail
           if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
             echo "[${ORG}] No merged findings to summarize."
+            echo "## TruffleHog summary for \`${ORG}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- No findings to report" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           # Check if issues should be created for this org
           CREATE_ISSUES="false"
