@@ -775,13 +775,18 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         "",
     ]
 
+    # Always show additional resources
+    resources = [
+        "### Additional Resources",
+        "- 🧹 [Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)",
+        "- 🔒 [GitHub secret scanning documentation](https://docs.github.com/en/code-security/secret-scanning)",
+    ]
+
     if remediation_link:
-        guidance.extend([
-            "### Additional Resources",
-            f"- 📖 [Complete remediation guide]({remediation_link})",
-            f"- 🔒 [GitHub secret scanning documentation](https://docs.github.com/en/code-security/secret-scanning)",
-            "",
-        ])
+        resources.insert(1, f"- 📖 [Complete remediation guide]({remediation_link})")
+
+    resources.append("")
+    guidance.extend(resources)
 
     return "\n".join([s for s in header if s != ""] + rows + guidance)
 
