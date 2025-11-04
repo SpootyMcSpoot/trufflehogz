@@ -275,13 +275,20 @@ def shortpath(p: str) -> str:
     return ".../" + "/".join(parts[-3:])
 
 def line_link(repo: str, commit: Optional[str], path: str, line: Optional[int]) -> str:
+    """
+    Generate a GitHub link to the file WITHOUT line anchor.
+
+    SECURITY: We intentionally omit the #L{line} anchor to prevent GitHub from
+    automatically showing code previews that would expose the secret in the issue.
+    Users can still find the exact line by looking at the Line column in the table.
+    """
     if repo and path:
         quoted = urlquote(path, safe="/")
-        anchor = f"#L{line}" if line else ""
+        # NOTE: No line anchor to prevent GitHub's auto code preview
         if commit:
-            return f"https://github.com/{repo}/blob/{commit}/{quoted}{anchor}"
+            return f"https://github.com/{repo}/blob/{commit}/{quoted}"
         else:
-            return f"https://github.com/{repo}/blob/HEAD/{quoted}{anchor}"
+            return f"https://github.com/{repo}/blob/HEAD/{quoted}"
     if repo and commit:
         return f"https://github.com/{repo}/commit/{commit}"
     return ""
@@ -397,30 +404,132 @@ class GHClient:
             return None
 
     def search_issue_by_title(self, repo: str, title: str) -> bool:
-        """Search for an open issue by exact title match."""
-        q = f'repo:{repo} in:title "{title}" state:open'
-        path = f"/search/issues?q={quote_plus(q)}&per_page=1"
+        """
+        Search for an issue (open or closed) by exact title match using Issues API.
+
+        Note: Uses /repos/{repo}/issues instead of /search/issues because
+        fine-grained PATs may not have access to the Search API.
+
+        Searches both open and closed issues to prevent re-creating issues
+        for findings that were previously reported.
+        """
         try:
-            data = self.call("GET", path, None)
-            return bool(data.get("total_count", 0))
+            # Check both open and closed issues (state=all)
+            # We check first 2 pages (60 issues) to cover recent history
+            for page in [1, 2]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=all&per_page=30&page={page}", None)
+                if isinstance(data, list):
+                    for issue in data:
+                        if isinstance(issue, dict) and issue.get("title") == title:
+                            state = issue.get("state", "unknown")
+                            logging.info("Found existing issue in %s with title: %s (state=%s)", repo, title, state)
+                            return True
+                    # If we got fewer than 30 results, no need to check next page
+                    if len(data) < 30:
+                        break
+            return False
         except HTTPError as e:
-            logging.warning("Failed to search issues in %s: HTTP %d (may create duplicate)", repo, e.code)
+            logging.warning("Failed to list issues in %s: HTTP %d (may create duplicate)", repo, e.code)
             return False
 
     def search_recent_issues(self, repo: str, title_pattern: str, days: int = DEFAULT_ISSUE_DEDUP_DAYS) -> bool:
-        """Search for recent issues matching a title pattern (partial match)."""
+        """
+        Search for recent issues matching a title pattern using Issues API.
+
+        Note: Uses /repos/{repo}/issues instead of /search/issues because
+        fine-grained PATs may not have access to the Search API.
+        """
         import datetime
-        cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
-        q = f'repo:{repo} in:title "{title_pattern}" state:open created:>={cutoff_date}'
-        path = f"/search/issues?q={quote_plus(q)}&per_page=5"
+        # Use timezone-aware datetime to match GitHub API timestamps
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         try:
-            data = self.call("GET", path, None)
-            count = data.get("total_count", 0)
-            if count > 0:
-                logging.info("Found %d recent open issue(s) in %s matching '%s'", count, repo, title_pattern)
-            return count > 0
+            # List open issues sorted by created date
+            # Check first 2 pages (60 issues) for recent matches
+            for page in [1, 2]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=open&sort=created&direction=desc&per_page=30&page={page}", None)
+                if not isinstance(data, list):
+                    break
+
+                for issue in data:
+                    if not isinstance(issue, dict):
+                        continue
+
+                    # Check if title matches pattern
+                    issue_title = issue.get("title", "")
+                    if title_pattern not in issue_title:
+                        continue
+
+                    # Check if within date range
+                    created_at = issue.get("created_at", "")
+                    if created_at:
+                        try:
+                            created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            if created >= cutoff:
+                                logging.info("Found recent open issue in %s matching '%s' (created %s)",
+                                           repo, title_pattern, created_at)
+                                return True
+                        except (ValueError, AttributeError):
+                            pass
+
+                # If we got fewer than 30 results, no need to check next page
+                if len(data) < 30:
+                    break
+
+            return False
         except HTTPError as e:
-            logging.warning("Failed to search recent issues in %s: HTTP %d", repo, e.code)
+            logging.warning("Failed to list recent issues in %s: HTTP %d", repo, e.code)
+            return False
+
+    def search_recent_issues_with_hash(self, repo: str, title_pattern: str, hash_pattern: str, days: int = DEFAULT_ISSUE_DEDUP_DAYS) -> bool:
+        """
+        Search for issues (open or closed) matching both title and hash patterns using Issues API.
+
+        Looks for issues with the same findings hash to prevent duplicates even if
+        reported on different days or if the original issue was closed.
+
+        Searches both open and closed issues to avoid re-notifying about the same
+        secrets that were already reported.
+        """
+        import datetime
+        # Use timezone-aware datetime to match GitHub API timestamps
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        try:
+            # List ALL issues (open and closed) sorted by created date
+            # Check first 5 pages (150 issues) for hash matches
+            for page in [1, 2, 3, 4, 5]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=all&sort=created&direction=desc&per_page=30&page={page}", None)
+                if not isinstance(data, list):
+                    break
+
+                for issue in data:
+                    if not isinstance(issue, dict):
+                        continue
+
+                    # Check if title matches both patterns
+                    issue_title = issue.get("title", "")
+                    if title_pattern not in issue_title or hash_pattern not in issue_title:
+                        continue
+
+                    # Check if within date range
+                    created_at = issue.get("created_at", "")
+                    if created_at:
+                        try:
+                            created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            if created >= cutoff:
+                                state = issue.get("state", "unknown")
+                                logging.info("Found existing issue in %s with same findings hash '%s' (created %s, state=%s)",
+                                           repo, hash_pattern, created_at, state)
+                                return True
+                        except (ValueError, AttributeError):
+                            pass
+
+                # If we got fewer than 30 results, no need to check next page
+                if len(data) < 30:
+                    break
+
+            return False
+        except HTTPError as e:
+            logging.warning("Failed to list recent issues with hash in %s: HTTP %d", repo, e.code)
             return False
 
     def get_labels(self, repo: str) -> List[str]:
@@ -692,6 +801,36 @@ def write_markdown_summary(ndjson_path: str,
 
 # ---------------------------- Issue creation ----------------------------
 
+def compute_findings_hash(items: List[Dict[str, Any]]) -> str:
+    """
+    Compute a deterministic hash from findings to uniquely identify this set of secrets.
+
+    Uses file paths, line numbers, and commits to create a stable identifier.
+    Same findings = same hash, allowing duplicate detection even across days.
+    """
+    import hashlib
+
+    # Create a stable, sorted representation of all findings
+    stable_items = []
+    for item in items:
+        # Use key characteristics: file, line, commit
+        stable_items.append((
+            item.get("file", ""),
+            item.get("line", -1),
+            item.get("commit", "")
+        ))
+
+    # Sort to ensure deterministic ordering
+    stable_items.sort()
+
+    # Hash the representation
+    hasher = hashlib.sha256()
+    for file, line, commit in stable_items:
+        hasher.update(f"{file}:{line}:{commit}".encode("utf-8"))
+
+    # Return first 8 characters (short but unique enough)
+    return hasher.hexdigest()[:8]
+
 def repo_is_actionable(meta: Optional[dict]) -> bool:
     if not meta:
         return False
@@ -703,13 +842,17 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
         return False
     return True
 
-def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str) -> str:
+def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
+    count_text = "1 verified secret" if len(items) == 1 else f"{len(items)} verified secrets"
     header = [
-        f"Automated TruffleHog (OSS) scan found {len(items)} verified secret(s) in this repository.",
+        f"## Secret Detection Alert",
         "",
-        f"Scan run: {run_url}" if run_url else "",
+        f"**Status**: {count_text} found in this repository",
+        f"**Scan**: [View workflow run]({run_url})" if run_url else "",
         "",
-        "> Do not paste secrets in this issue. Rotate or revoke credentials and clean history as appropriate.",
+        "> **SECURITY NOTICE**: Do not paste secret values in this issue. All secrets below should be considered compromised.",
+        "",
+        "### Findings",
         "",
         "| Detector | File | Line | Link |",
         "|---|---|---:|---|",
@@ -719,16 +862,64 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str) -> st
         path = it.get("file", "") or ""
         ln = it.get("line")
         sha = it.get("commit")
-        link = line_link(repo, sha, path, ln)
+        link_url = line_link(repo, sha, path, ln)
         ln_str = str(ln) if ln is not None else ""
-        rows.append(f"| {it.get('detector','')} | `{path}` | {ln_str} | {link} |")
+
+        # Format link as markdown to make it clickable
+        link_display = f"[View]({link_url})" if link_url else ""
+
+        rows.append(f"| {it.get('detector','')} | `{path}` | {ln_str} | {link_display} |")
+
+    # Build remediation guide link if scanner_repo is provided
+    remediation_link = ""
+    if scanner_repo:
+        remediation_link = f"https://github.com/{scanner_repo}/blob/main/README.md#remediating-discovered-secrets"
+
     guidance = [
         "",
-        "Next steps",
-        "- Rotate or revoke affected credentials.",
-        "- Remove the secret and rewrite history if needed (for example, BFG or git filter-repo).",
-        "- Add pre-commit and CI secret scanning gates to prevent reintroduction.",
+        "---",
+        "",
+        "## Remediation Steps",
+        "",
+        "### Step 1: Rotate/Revoke Immediately",
+        "**Assume all secrets above are compromised.** Rotate or revoke them in your service provider:",
+        "- GitHub tokens: [Settings → Developer settings → Personal access tokens]" + "(https://github.com/settings/tokens)",
+        "- AWS keys: Use AWS IAM Console",
+        "- Other services: Check your provider's credential management",
+        "",
+        "### Step 2: Remove from Git History",
+        "**Recent commits** (last few commits):",
+        "```bash",
+        "git rebase -i HEAD~5  # Edit/drop commits containing secrets",
+        "```",
+        "",
+        "**Older commits** (anywhere in history):",
+        "```bash",
+        "# Install git-filter-repo first: pip install git-filter-repo",
+        "git filter-repo --replace-text <(echo 'YOUR_SECRET_HERE==>REDACTED')",
+        "```",
+        "",
+        "### Step 3: Force Push & Notify Team",
+        "```bash",
+        "git push --force-with-lease",
+        "```",
+        "**WARNING**: Coordinate with your team before force-pushing to shared branches.",
+        "",
     ]
+
+    # Always show additional resources
+    resources = [
+        "### Additional Resources",
+        "- [Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)",
+        "- [GitHub secret scanning documentation](https://docs.github.com/en/code-security/secret-scanning)",
+    ]
+
+    if remediation_link:
+        resources.insert(1, f"- [Complete remediation guide]({remediation_link})")
+
+    resources.append("")
+    guidance.extend(resources)
+
     return "\n".join([s for s in header if s != ""] + rows + guidance)
 
 def process_repo(repo: str,
@@ -737,24 +928,29 @@ def process_repo(repo: str,
                  title_prefix: str,
                  run_url: str,
                  extra_labels: Optional[List[str]],
-                 dry_run: bool) -> Tuple[str, bool]:
+                 dry_run: bool,
+                 scanner_repo: str = "") -> Tuple[str, bool]:
     logging.info("Processing repo %s with %d finding(s)", repo, len(items))
     meta = gh.repo_meta(repo)
     if not repo_is_actionable(meta):
         return (repo, False)
 
+    # Compute unique hash for these findings to enable duplicate detection
+    findings_hash = compute_findings_hash(items)
     today = datetime.date.today().isoformat()
-    title = f"{title_prefix} Secrets scan report - {today}"
+    title = f"{title_prefix} Secrets scan report - {today} ({findings_hash})"
 
-    # Check for exact match (same day issue)
+    # Check for exact match (same findings, same day)
     if gh.search_issue_by_title(repo, title):
-        logging.info("Open issue already exists today for %s", repo)
+        logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
         return (repo, False)
 
-    # Check for recent issues (within 7 days) to avoid spam
+    # Check for issues with same findings hash within last 90 days (open or closed)
+    # This prevents re-notifying about secrets that were already reported
     title_pattern = f"{title_prefix} Secrets scan report"
-    if gh.search_recent_issues(repo, title_pattern, days=7):
-        logging.info("Recent open issue exists in %s, skipping to avoid duplicates", repo)
+    hash_pattern = f"({findings_hash})"
+    if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=90):
+        logging.info("Issue already exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
         return (repo, False)
 
     auto = labels_for_items(items, extra_labels)
@@ -763,7 +959,7 @@ def process_repo(repo: str,
     except HTTPError as e:
         logging.warning("Skipping label creation in %s due to HTTP %d; continuing to issue body.", repo, e.code)
 
-    body = build_issue_body(repo, items, run_url)
+    body = build_issue_body(repo, items, run_url, scanner_repo)
     try:
         created = gh.create_issue(repo, title, body, auto) or {}
         issue_number = created.get("number")
@@ -804,6 +1000,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ndjson", default="findings.ndjson")
     p.add_argument("--run-url", default="")
+    p.add_argument("--scanner-repo", default="", help="GitHub repository with remediation docs (org/repo)")
     p.add_argument("--max-workers", type=int, default=0)
     p.add_argument("--labels", default="")
     p.add_argument("--dry-run", action="store_true")
@@ -901,7 +1098,7 @@ def main() -> int:
         futures = []
         for repo, items in findings.items():
             futures.append(pool.submit(
-                process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run
+                process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run, args.scanner_repo
             ))
         for fut in cf.as_completed(futures):
             try:

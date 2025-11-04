@@ -1,6 +1,9 @@
 name: "TruffleHog – Org Scan (Non-Public Repos)"
 
 on:
+  schedule:
+    # Run every Sunday at 6 PM UTC (Sunday evening)
+    - cron: '0 18 * * 0'
   push:
     branches:
       - '**'
@@ -8,18 +11,8 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
-      target_org:
-        description: "Select target organization"
-        required: false
-        default: ""
-        type: choice
-        options:
-          - ""
-          - "your-org-name-1"
-          - "your-org-name-2"
-          - "your-org-name-3"
       org_names:
-        description: "Comma-separated list of orgs (for multiple orgs or custom names)"
+        description: "Comma-separated list of organizations to scan"
         required: false
         default: ""
         type: string
@@ -109,7 +102,6 @@ jobs:
     outputs:
       orgs_json: ${{ steps.set-matrix.outputs.orgs_json }}
     env:
-      TARGET_ORG: ${{ inputs.target_org }}
       INPUT_ORGS: ${{ inputs.org_names }}
       VAR_ORGS: ${{ vars.TRUFFLEHOG_ORGS }}
       DEFAULT_ORGS: ""
@@ -118,8 +110,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          ORG_LIST="${TARGET_ORG:-}"
-          if [ -z "${ORG_LIST}" ]; then ORG_LIST="${INPUT_ORGS:-}"; fi
+          ORG_LIST="${INPUT_ORGS:-}"
           if [ -z "${ORG_LIST}" ]; then ORG_LIST="${VAR_ORGS:-}"; fi
           if [ -z "${ORG_LIST}" ]; then ORG_LIST="${DEFAULT_ORGS}"; fi
           IFS=',' read -r -a ORGS_ARR <<< "${ORG_LIST}"
@@ -523,15 +514,12 @@ jobs:
             # Calculate timeout for this repo
             local timeout=$(calc_timeout "${repo_size}")
 
-            echo "[${ORG}] scanning ${full} (size: ${repo_size}KB, timeout: ${timeout})"
+            echo "[${ORG}] scanning ${full} (size: ${repo_size}KB, timeout: ${timeout}, mode: ${SCAN_MODE})"
 
-            # Prepare time-based scanning flags
-            local TIME_FLAGS=()
-            if [ "${SCAN_MODE}" = "recent" ] || [ "${SCAN_MODE}" = "incremental" ]; then
-              local since_date=$(date -u -d "${SCAN_LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
-              TIME_FLAGS+=( "--since" "${since_date}" )
-              echo "[${ORG}] ${full} scanning since ${since_date}"
-            fi
+            # NOTE: TruffleHog doesn't support date-based --since filtering
+            # It only supports --since-commit with commit references (branch names/hashes)
+            # For comprehensive security scanning, we scan full history
+            # To use commit-based filtering, add: --since-commit main --branch <branch-name>
 
             branches_found="$(list_branches_api "${full}")"
             if [ "${ALL_HEADS}" = "true" ] && [ "${branches_found}" = "1" ]; then
@@ -541,7 +529,7 @@ jobs:
                 timeout --kill-after=30s "${timeout}" docker run --rm \
                   -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
                   -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${REPO_URL}" \
-                  --branch "$br" "${EXTRA_FLAGS[@]}" "${TIME_FLAGS[@]}" >> "$out" 2>> "$err" || {
+                  --branch "$br" "${EXTRA_FLAGS[@]}" >> "$out" 2>> "$err" || {
                     local exit_code=$?
                     if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
                       echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"branch\":\"${br}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
@@ -553,7 +541,7 @@ jobs:
               timeout --kill-after=30s "${timeout}" docker run --rm \
                 -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
                 -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${REPO_URL}" \
-                "${EXTRA_FLAGS[@]}" "${TIME_FLAGS[@]}" > "$out" 2> "$err" || {
+                "${EXTRA_FLAGS[@]}" > "$out" 2> "$err" || {
                   local exit_code=$?
                   if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
                     echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
@@ -650,7 +638,8 @@ jobs:
       GH_PAT: ${{ secrets.GH_PAT }}
       RUN_URL: ${{ github.run_url }}
       OPEN_ISSUES: ${{ inputs.open_issues }}
-      ISSUES_CREATION_ORGS: ${{ inputs.issues_creation_orgs }}
+      INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
+      VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -682,8 +671,17 @@ jobs:
           set -Eeuo pipefail
           if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
             echo "[${ORG}] No merged findings to summarize."
+            echo "## TruffleHog summary for \`${ORG}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- No findings to report" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           # Check if issues should be created for this org
+          # Priority: INPUT_ISSUES_ORGS > VAR_ISSUES_ORGS
+          ISSUES_CREATION_ORGS="${INPUT_ISSUES_ORGS:-}"
+          if [ -z "${ISSUES_CREATION_ORGS}" ]; then
+            ISSUES_CREATION_ORGS="${VAR_ISSUES_ORGS:-}"
+          fi
+
           CREATE_ISSUES="false"
           if [ "${OPEN_ISSUES}" = "true" ]; then
             if [ -z "${ISSUES_CREATION_ORGS}" ]; then
@@ -717,6 +715,7 @@ jobs:
             --summary-detailed-per-repo 9999 \
             --summary-detailed-max 5000 \
             --run-url "$RUN_URL" \
+            --scanner-repo "${{ github.repository }}" \
             --exclude-patterns-file .github/trufflehog/false_positives.txt \
             --max-workers 8 \
             --log-level INFO \

@@ -6,13 +6,68 @@ A production-ready GitHub Actions workflow that scans multiple organizations for
 
 ## Quick Start
 
-1. **Set up repository secret**: Add `GH_PAT` (see [Setup](#setup) for detailed PAT permissions)
+1. **Set up repository secret**: Add `GH_PAT` (see [Required Secrets and Variables](#required-secrets-and-variables))
    - Classic PAT: `repo` + `read:org` scopes
    - Fine-grained PAT: Contents (Read) + Members (Read)
 2. **Configure organizations**: Set repository variable `TRUFFLEHOG_ORGS` (comma-separated list)
 3. **Run workflow**: Go to Actions → TruffleHog – Org Scan → Run workflow
 
 That's it! The workflow uses optimized defaults and runs **40-60% faster** than traditional scanning.
+
+## Required Secrets and Variables
+
+This workflow requires the following repository secrets and variables to function properly:
+
+### Secrets (Required)
+
+| Secret Name | Type | Required | Description | Example |
+|-------------|------|----------|-------------|---------|
+| `GH_PAT` | Repository Secret | Yes | GitHub Personal Access Token for scanning repositories and creating issues | See [Setup](#setup) for PAT creation |
+
+### Variables (Optional)
+
+| Variable Name | Type | Required | Description | Example | Default |
+|---------------|------|----------|-------------|---------|---------|
+| `TRUFFLEHOG_ORGS` | Repository Variable | No | Default comma-separated list of organizations to scan | `org1,org2,org3` | Empty (must specify via input) |
+| `TRUFFLEHOG_ISSUES_ORGS` | Repository Variable | No | Comma-separated list of organizations where issues should be created when `open_issues: true` | `org1,org2` | Empty (creates issues for all scanned orgs) |
+
+**Priority Order:**
+- Organizations to scan: `org_names` input > `TRUFFLEHOG_ORGS` variable
+- Organizations for issue creation: `issues_creation_orgs` input > `TRUFFLEHOG_ISSUES_ORGS` variable
+
+**How to Configure:**
+
+1. **Add Secret** (Repository Settings → Secrets and variables → Actions → Secrets):
+   - Click "New repository secret"
+   - Name: `GH_PAT`
+   - Value: Your GitHub Personal Access Token
+   - Click "Add secret"
+
+2. **Add Variables** (Repository Settings → Secrets and variables → Actions → Variables):
+   - Click "New repository variable"
+   - Name: `TRUFFLEHOG_ORGS` or `TRUFFLEHOG_ISSUES_ORGS`
+   - Value: Comma-separated list of organization names
+   - Click "Add variable"
+
+## Scheduled Runs
+
+The workflow is configured to run automatically:
+- **Every Sunday at 6 PM UTC** (Sunday evening)
+- This schedule can be adjusted by modifying the `cron` expression in `.github/workflows/trufflehog-org-scan.yml`
+- Manual runs are always available via the "Run workflow" button in the Actions tab
+
+To change the schedule, edit the cron expression:
+```yaml
+on:
+  schedule:
+    - cron: '0 18 * * 0'  # Sunday at 6 PM UTC
+```
+
+Common cron schedules:
+- `0 0 * * *` - Daily at midnight UTC
+- `0 0 * * 1` - Every Monday at midnight UTC
+- `0 18 * * 0` - Every Sunday at 6 PM UTC (current)
+- `0 6 * * 1-5` - Weekdays at 6 AM UTC
 
 ## Performance Features
 
@@ -57,25 +112,22 @@ That's it! The workflow uses optimized defaults and runs **40-60% faster** than 
 - **Repos per Shard**: 50 (configurable 25-100)
 - **Concurrent Scans**: 8 per shard (configurable 4-16)
 - **Results Filter**: verified + unknown
-- **All Settings**: Fully configurable via 11 workflow inputs
+- **All Settings**: Fully configurable via 10 workflow inputs
 
 ## Configuration
 
-### Workflow Inputs (11 Total)
+### Workflow Inputs (10 Total)
 
 The workflow accepts the following inputs via the Actions UI (Run workflow button). All inputs are fully configurable.
-
-> **Note**: GitHub Actions has a limit of 10 inputs for workflow_dispatch. This workflow currently has 11 inputs (1 over the limit). To use this workflow, you may need to remove one input or merge `target_org` and `org_names` into a single input.
 
 #### Basic Configuration
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
-| `target_org` | dropdown | (empty) | Select a single target organization from predefined list |
-| `org_names` | comma-separated | (from var) | Organizations to scan (for multiple orgs or custom names) |
+| `org_names` | comma-separated | (from var) | Organizations to scan (supports single or multiple orgs) |
 | `open_issues` | true/false | false | Create GitHub issues for findings |
 | `issues_creation_orgs` | comma-separated | (empty) | Allowlist of orgs where issues should be created (empty = all orgs) |
 
-**Note**: The `target_org` dropdown takes priority over `org_names` and GitHub variables. Use `target_org` for quick selection of a single organization, or use `org_names` for multiple organizations or custom names. The `issues_creation_orgs` allowlist controls which organizations will have issues created when `open_issues` is true.
+**Note**: The `org_names` input takes priority over the `TRUFFLEHOG_ORGS` repository variable. The `issues_creation_orgs` allowlist controls which organizations will have issues created when `open_issues` is true.
 
 #### Deep Scan Mode
 | Input | Options | Default | Description |
@@ -382,22 +434,17 @@ After creating either token type, store it as a repository secret:
 
 ### 2. Organization Configuration
 
-**Option A: Dropdown Selection (Quickest)**
-1. Edit `.github/workflows/trufflehog-org-scan.yml`
-2. Update the `target_org` dropdown options with your organization names
-3. Select from dropdown when clicking "Run workflow"
-
-**Option B: Repository Variable (Recommended for defaults)**
+**Option A: Repository Variable (Recommended for defaults)**
 ```
 Repository Settings → Secrets and variables → Actions → Variables
 Name: TRUFFLEHOG_ORGS
 Value: org1,org2,org3
 ```
 
-**Option C: Manual Text Input**
-Use the `org_names` input when clicking "Run workflow" (supports comma-separated list)
+**Option B: Manual Text Input**
+Use the `org_names` input when clicking "Run workflow" (supports comma-separated list for single or multiple orgs)
 
-**Priority Order**: `target_org` dropdown > `org_names` text input > `TRUFFLEHOG_ORGS` variable
+**Priority Order**: `org_names` text input > `TRUFFLEHOG_ORGS` variable
 
 ### 3. False Positive Filtering (Optional)
 
@@ -490,7 +537,21 @@ After each run, you'll see a comprehensive summary:
 
 ### Enable Issue Creation
 1. Set `open_issues: true` in workflow input (default is `false` for dry-run)
-2. Optionally, set `issues_creation_orgs` to a comma-separated list of organizations where issues should be created
+2. Configure which organizations should have issues created:
+
+   **Option A: Repository Variable (Recommended for defaults)**
+   ```
+   Repository Settings → Secrets and variables → Actions → Variables
+   Name: TRUFFLEHOG_ISSUES_ORGS
+   Value: org1,org2,org3
+   ```
+
+   **Option B: Workflow Input**
+   Set `issues_creation_orgs` to a comma-separated list when running the workflow manually
+
+   **Priority Order**: `issues_creation_orgs` input > `TRUFFLEHOG_ISSUES_ORGS` variable
+
+   **Behavior:**
    - If empty (default): Issues will be created for all scanned organizations
    - If specified: Issues will only be created for organizations in the allowlist
    - Example: `org1,org2,org3` will only create issues for those three orgs
@@ -501,18 +562,271 @@ Automated TruffleHog (OSS) scan found 2 verified secret(s) in this repository.
 
 Scan run: https://github.com/.../actions/runs/...
 
-> Do not paste secrets in this issue. Rotate or revoke credentials and clean history.
+> Do not paste secrets in this issue. Rotate or revoke credentials and clean history as appropriate.
 
 | Detector | File | Line | Link |
 |---|---|---:|---|
 | AWS | `config.py` | 42 | https://... |
 | GitHub | `scripts/deploy.sh` | 88 | https://... |
 
-## Next steps
-- Rotate or revoke affected credentials
-- Remove the secret and rewrite history if needed
-- Add pre-commit and CI secret scanning gates
+## How to fix
+**1. Rotate the secret immediately** (assume compromised)
+**2. Remove from git history:**
+   - Recent commits: `git rebase -i HEAD~5` (edit/drop commits with secrets)
+   - Old commits: `git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')`
+
+[Full remediation guide](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)
 ```
+
+**Note**: Issues provide simple one-liner commands to fix the problem, plus a link to the complete remediation guide for detailed instructions.
+
+Example issue body showing the remediation section:
+```markdown
+## How to fix
+**1. Rotate the secret immediately** (assume compromised)
+**2. Remove from git history:**
+   - Recent commits: git rebase -i HEAD~5 (edit/drop commits with secrets)
+   - Old commits: git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')
+
+[Full remediation guide](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)
+```
+
+## Remediating Discovered Secrets
+
+When TruffleHog discovers secrets in your repository, follow these steps to properly remediate them:
+
+### 1. Immediate Response (Critical: Do This First)
+
+**Rotate or Revoke Credentials Immediately**
+- **Before** cleaning git history, assume the secret is already compromised
+- Rotate API keys, passwords, tokens, or certificates
+- Revoke the compromised credentials in the service provider's dashboard
+- Generate new credentials and store them securely (use a secrets manager)
+
+**Examples:**
+- AWS: Deactivate and delete the IAM access key, create a new one
+- GitHub: Revoke the personal access token, generate a new one
+- Database passwords: Change the password immediately
+- API keys: Regenerate the key in the provider's dashboard
+
+### 2. Remove Secrets from Current Files
+
+Remove the secret from your current working tree:
+
+```bash
+# Edit the file and remove the secret
+vim path/to/file-with-secret.py
+
+# Or replace the secret with a placeholder/environment variable
+sed -i 's/sk-live-abc123xyz/os.getenv("API_KEY")/g' config.py
+
+# Commit the change
+git add path/to/file-with-secret.py
+git commit -m "Remove hardcoded secret, use environment variable"
+```
+
+### 3. Purge Secrets from Git History
+
+**CRITICAL**: Rewriting git history is a destructive operation. Coordinate with your team and ensure everyone is aware.
+
+Choose the appropriate method based on when the secret was committed:
+
+#### For Recent Commits (Simplest - Use This When Possible)
+
+If the secret was committed recently (last few commits), use interactive rebase:
+
+```bash
+# View recent commits to find the one with the secret
+git log --oneline -10
+
+# Interactive rebase to edit/remove commits
+# Replace N with number of commits to go back
+git rebase -i HEAD~N
+
+# In the editor, change 'pick' to 'drop' for commits to remove
+# Or change to 'edit' to modify the commit
+# Save and close
+
+# If you chose 'edit', make your changes now:
+vim path/to/file-with-secret.py
+git add path/to/file-with-secret.py
+git rebase --continue
+
+# Force push to remote (see step 4 below)
+```
+
+**Alternative for very recent commits**: If the secret is only in the last unpushed commit, simply amend:
+
+```bash
+# Fix the file
+vim path/to/file-with-secret.py
+git add path/to/file-with-secret.py
+
+# Amend the last commit
+git commit --amend --no-edit
+```
+
+#### For Old or Complex History (Industry Standard: git-filter-repo)
+
+For secrets deep in history or across multiple branches, use [git-filter-repo](https://github.com/newren/git-filter-repo) - the official Git-recommended tool that replaced git-filter-branch.
+
+**Installation:**
+```bash
+# macOS
+brew install git-filter-repo
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install git-filter-repo
+
+# Or via pip
+pip install git-filter-repo
+```
+
+**Usage:**
+```bash
+# ALWAYS create a backup first
+git clone https://github.com/org/repo.git repo-backup
+cd repo
+
+# Method 1: Remove a specific file from all history
+git filter-repo --path path/to/secret-file.py --invert-paths
+
+# Method 2: Replace text across all history (recommended for secrets in code)
+echo 'sk-live-abc123xyz==>REDACTED' > /tmp/replacements.txt
+git filter-repo --replace-text /tmp/replacements.txt
+
+# Method 3: Multiple text replacements
+cat > /tmp/replacements.txt <<EOF
+sk-live-abc123xyz==>REDACTED
+ghp_OldToken123456789==>REDACTED
+AKIA1234EXAMPLEKEY==>REDACTED
+EOF
+git filter-repo --replace-text /tmp/replacements.txt
+
+# Verify the secret is gone
+git log --all --oneline --source -S 'sk-live-abc123xyz'
+# Should return no results
+```
+
+**Why git-filter-repo?**
+- Official replacement for git-filter-branch (deprecated since Git 2.38)
+- 10-100x faster than git-filter-branch
+- Safer: catches common mistakes and pitfalls
+- Better for large repositories
+- Actively maintained and recommended by Git developers
+
+### 4. Force Push and Notify Team
+
+**WARNING**: Force pushing rewrites history. Ensure all team members are aware and prepared.
+
+```bash
+# Force push to remote (this will rewrite history on remote)
+git push origin --force --all
+git push origin --force --tags
+
+# Notify all team members to re-clone or reset their local copies
+```
+
+**Team members should:**
+```bash
+# Option 1: Delete and re-clone (safest)
+cd ..
+rm -rf old-repo
+git clone https://github.com/org/repo.git
+
+# Option 2: Reset local repo (be careful, loses local changes)
+git fetch origin
+git reset --hard origin/main  # or your branch name
+git clean -fdx
+```
+
+### 5. Post-Remediation Steps
+
+After cleaning git history:
+
+1. **Verify the secret is gone**: Run TruffleHog again on the cleaned repo
+   ```bash
+   docker run --rm -v "$PWD:/work" -w /work \
+     ghcr.io/trufflesecurity/trufflehog:3.90.6 \
+     git file:///work --only-verified
+   ```
+
+2. **Invalidate GitHub's cache** (for public repos): Contact GitHub Support to purge cached refs
+
+3. **Update protection rules**:
+   - Add the file/pattern to `.gitignore` if it shouldn't be tracked
+   - Set up pre-commit hooks to prevent future secret commits
+   - Enable GitHub secret scanning and push protection
+
+4. **Add prevention measures**:
+   ```bash
+   # Install pre-commit hook with TruffleHog
+   pip install pre-commit
+
+   # Create .pre-commit-config.yaml
+   cat > .pre-commit-config.yaml <<EOF
+   repos:
+     - repo: https://github.com/trufflesecurity/trufflehog
+       rev: v3.90.6
+       hooks:
+         - id: trufflehog
+           name: TruffleHog Secret Scan
+           entry: trufflehog git file://. --since-commit HEAD --only-verified --fail
+   EOF
+
+   # Install the hook
+   pre-commit install
+   ```
+
+5. **Monitor for exposure**:
+   - Check if the secret was exposed in any forks
+   - Monitor audit logs for unauthorized usage
+   - Review access logs for suspicious activity
+
+### Important Considerations
+
+**WARNING - Public Repositories:**
+- Once pushed to a public repo, assume the secret was harvested by bots
+- Secrets can persist in forks even after you clean your history
+- Contact GitHub Support to purge cached views of commits
+
+**WARNING - Private Repositories:**
+- Secrets may still be visible to anyone who had access
+- Check who cloned the repo while the secret was exposed
+- Consider if any CI/CD logs or artifacts contain the secret
+
+**WARNING - Large Repositories:**
+- History rewriting can take significant time (hours for large repos)
+- Test the process on a mirror/backup first
+- git-filter-repo is optimized for large repositories (10-100x faster than legacy tools)
+
+**WARNING - Protected Branches:**
+- Temporarily disable branch protection rules to force push
+- Re-enable protection immediately after pushing
+
+### Alternative: Secrets Management
+
+To prevent secrets from entering git in the first place:
+
+```bash
+# Use environment variables
+export DATABASE_PASSWORD="secret"
+python app.py
+
+# Use a .env file (add to .gitignore)
+echo "DATABASE_PASSWORD=secret" > .env
+echo ".env" >> .gitignore
+
+# Use a secrets manager
+# AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, etc.
+```
+
+**Best practices:**
+- Store secrets in environment variables or secrets managers
+- Use GitHub Secrets for Actions workflows
+- Never commit `.env` files (add to `.gitignore`)
+- Use placeholder values in example/template files
+- Enable GitHub's push protection for secret scanning
 
 ## Testing
 
