@@ -754,12 +754,12 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
 def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
     count_text = "1 verified secret" if len(items) == 1 else f"{len(items)} verified secrets"
     header = [
-        f"## 🔐 Secret Detection Alert",
+        f"## Secret Detection Alert",
         "",
         f"**Status**: {count_text} found in this repository",
         f"**Scan**: [View workflow run]({run_url})" if run_url else "",
         "",
-        "> ⚠️ **SECURITY NOTICE**: Do not paste secret values in this issue. All secrets below should be considered compromised.",
+        "> **SECURITY NOTICE**: Do not paste secret values in this issue. All secrets below should be considered compromised.",
         "",
         "### Findings",
         "",
@@ -788,7 +788,7 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         "",
         "---",
         "",
-        "## 🛠️ Remediation Steps",
+        "## Remediation Steps",
         "",
         "### Step 1: Rotate/Revoke Immediately",
         "**Assume all secrets above are compromised.** Rotate or revoke them in your service provider:",
@@ -812,19 +812,19 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         "```bash",
         "git push --force-with-lease",
         "```",
-        "⚠️ Coordinate with your team before force-pushing to shared branches.",
+        "**WARNING**: Coordinate with your team before force-pushing to shared branches.",
         "",
     ]
 
     # Always show additional resources
     resources = [
         "### Additional Resources",
-        "- 🧹 [Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)",
-        "- 🔒 [GitHub secret scanning documentation](https://docs.github.com/en/code-security/secret-scanning)",
+        "- [Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)",
+        "- [GitHub secret scanning documentation](https://docs.github.com/en/code-security/secret-scanning)",
     ]
 
     if remediation_link:
-        resources.insert(1, f"- 📖 [Complete remediation guide]({remediation_link})")
+        resources.insert(1, f"- [Complete remediation guide]({remediation_link})")
 
     resources.append("")
     guidance.extend(resources)
