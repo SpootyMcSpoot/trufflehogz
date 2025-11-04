@@ -75,6 +75,19 @@ This PR contains multiple improvements to the TruffleHog secret scanning workflo
 
 **Impact**: Cleaner workflow configuration within GitHub's limits.
 
+### 6. Scheduled Scanning and Configuration Improvements
+
+**Problem**: No automated scheduling, insufficient documentation for configuration.
+
+**Solution**:
+- Added cron schedule to run scans every Sunday at 6 PM UTC
+- Added comprehensive "Required Secrets and Variables" section to README
+- Added "Scheduled Runs" section with examples of common cron schedules
+- Improved documentation on configuration priority order (input > variable)
+- Added clear instructions for setting up repository secrets and variables
+
+**Impact**: Automated weekly scanning, clearer setup instructions for users.
+
 ## Issue Title Format
 
 Issues now include unique hash for better tracking:
@@ -164,10 +177,13 @@ Existing open issues will remain unchanged. New scans will:
 8. Fix datetime comparison error in search_recent_issues
 9. Add unique findings hash to issue titles for better duplicate detection
 10. Search both open and closed issues to prevent duplicates
+11. Add comprehensive PR summary documentation
+12. Add cron schedule and improve configuration documentation
 
 ---
 
 **Files Changed**:
-- `.github/workflows/trufflehog-org-scan.yml` - Fixed scanning flags, removed redundant input, added early exit
+- `.github/workflows/trufflehog-org-scan.yml` - Fixed scanning flags, removed redundant input, added early exit, added cron schedule
 - `trufflehog_scanner.py` - Fixed API calls, added hash generation, improved issue formatting
-- `README.md` - Updated documentation (previous commits)
+- `README.md` - Updated documentation with configuration guide and scheduled runs
+- `PR_SUMMARY.md` - Comprehensive pull request summary
