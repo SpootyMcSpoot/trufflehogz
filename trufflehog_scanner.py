@@ -432,7 +432,8 @@ class GHClient:
         fine-grained PATs may not have access to the Search API.
         """
         import datetime
-        cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
+        # Use timezone-aware datetime to match GitHub API timestamps
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         try:
             # List open issues sorted by created date
             # Check first 2 pages (60 issues) for recent matches
