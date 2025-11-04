@@ -6,13 +6,68 @@ A production-ready GitHub Actions workflow that scans multiple organizations for
 
 ## Quick Start
 
-1. **Set up repository secret**: Add `GH_PAT` (see [Setup](#setup) for detailed PAT permissions)
+1. **Set up repository secret**: Add `GH_PAT` (see [Required Secrets and Variables](#required-secrets-and-variables))
    - Classic PAT: `repo` + `read:org` scopes
    - Fine-grained PAT: Contents (Read) + Members (Read)
 2. **Configure organizations**: Set repository variable `TRUFFLEHOG_ORGS` (comma-separated list)
 3. **Run workflow**: Go to Actions → TruffleHog – Org Scan → Run workflow
 
 That's it! The workflow uses optimized defaults and runs **40-60% faster** than traditional scanning.
+
+## Required Secrets and Variables
+
+This workflow requires the following repository secrets and variables to function properly:
+
+### Secrets (Required)
+
+| Secret Name | Type | Required | Description | Example |
+|-------------|------|----------|-------------|---------|
+| `GH_PAT` | Repository Secret | Yes | GitHub Personal Access Token for scanning repositories and creating issues | See [Setup](#setup) for PAT creation |
+
+### Variables (Optional)
+
+| Variable Name | Type | Required | Description | Example | Default |
+|---------------|------|----------|-------------|---------|---------|
+| `TRUFFLEHOG_ORGS` | Repository Variable | No | Default comma-separated list of organizations to scan | `org1,org2,org3` | Empty (must specify via input) |
+| `TRUFFLEHOG_ISSUES_ORGS` | Repository Variable | No | Comma-separated list of organizations where issues should be created when `open_issues: true` | `org1,org2` | Empty (creates issues for all scanned orgs) |
+
+**Priority Order:**
+- Organizations to scan: `org_names` input > `TRUFFLEHOG_ORGS` variable
+- Organizations for issue creation: `issues_creation_orgs` input > `TRUFFLEHOG_ISSUES_ORGS` variable
+
+**How to Configure:**
+
+1. **Add Secret** (Repository Settings → Secrets and variables → Actions → Secrets):
+   - Click "New repository secret"
+   - Name: `GH_PAT`
+   - Value: Your GitHub Personal Access Token
+   - Click "Add secret"
+
+2. **Add Variables** (Repository Settings → Secrets and variables → Actions → Variables):
+   - Click "New repository variable"
+   - Name: `TRUFFLEHOG_ORGS` or `TRUFFLEHOG_ISSUES_ORGS`
+   - Value: Comma-separated list of organization names
+   - Click "Add variable"
+
+## Scheduled Runs
+
+The workflow is configured to run automatically:
+- **Every Sunday at 6 PM UTC** (Sunday evening)
+- This schedule can be adjusted by modifying the `cron` expression in `.github/workflows/trufflehog-org-scan.yml`
+- Manual runs are always available via the "Run workflow" button in the Actions tab
+
+To change the schedule, edit the cron expression:
+```yaml
+on:
+  schedule:
+    - cron: '0 18 * * 0'  # Sunday at 6 PM UTC
+```
+
+Common cron schedules:
+- `0 0 * * *` - Daily at midnight UTC
+- `0 0 * * 1` - Every Monday at midnight UTC
+- `0 18 * * 0` - Every Sunday at 6 PM UTC (current)
+- `0 6 * * 1-5` - Weekdays at 6 AM UTC
 
 ## Performance Features
 
@@ -482,7 +537,21 @@ After each run, you'll see a comprehensive summary:
 
 ### Enable Issue Creation
 1. Set `open_issues: true` in workflow input (default is `false` for dry-run)
-2. Optionally, set `issues_creation_orgs` to a comma-separated list of organizations where issues should be created
+2. Configure which organizations should have issues created:
+
+   **Option A: Repository Variable (Recommended for defaults)**
+   ```
+   Repository Settings → Secrets and variables → Actions → Variables
+   Name: TRUFFLEHOG_ISSUES_ORGS
+   Value: org1,org2,org3
+   ```
+
+   **Option B: Workflow Input**
+   Set `issues_creation_orgs` to a comma-separated list when running the workflow manually
+
+   **Priority Order**: `issues_creation_orgs` input > `TRUFFLEHOG_ISSUES_ORGS` variable
+
+   **Behavior:**
    - If empty (default): Issues will be created for all scanned organizations
    - If specified: Issues will only be created for organizations in the allowlist
    - Example: `org1,org2,org3` will only create issues for those three orgs
@@ -506,10 +575,21 @@ Scan run: https://github.com/.../actions/runs/...
    - Recent commits: `git rebase -i HEAD~5` (edit/drop commits with secrets)
    - Old commits: `git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')`
 
-📖 [Full remediation guide](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)
+[Full remediation guide](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)
 ```
 
 **Note**: Issues provide simple one-liner commands to fix the problem, plus a link to the complete remediation guide for detailed instructions.
+
+Example issue body showing the remediation section:
+```markdown
+## How to fix
+**1. Rotate the secret immediately** (assume compromised)
+**2. Remove from git history:**
+   - Recent commits: git rebase -i HEAD~5 (edit/drop commits with secrets)
+   - Old commits: git filter-repo --replace-text <(echo 'SECRET_TEXT==>REDACTED')
+
+[Full remediation guide](https://github.com/org/repo/blob/main/README.md#remediating-discovered-secrets)
+```
 
 ## Remediating Discovered Secrets
 
@@ -705,22 +785,22 @@ After cleaning git history:
 
 ### Important Considerations
 
-**⚠️ Public Repositories**
+**WARNING - Public Repositories:**
 - Once pushed to a public repo, assume the secret was harvested by bots
 - Secrets can persist in forks even after you clean your history
 - Contact GitHub Support to purge cached views of commits
 
-**⚠️ Private Repositories**
+**WARNING - Private Repositories:**
 - Secrets may still be visible to anyone who had access
 - Check who cloned the repo while the secret was exposed
 - Consider if any CI/CD logs or artifacts contain the secret
 
-**⚠️ Large Repositories**
+**WARNING - Large Repositories:**
 - History rewriting can take significant time (hours for large repos)
 - Test the process on a mirror/backup first
 - git-filter-repo is optimized for large repositories (10-100x faster than legacy tools)
 
-**⚠️ Protected Branches**
+**WARNING - Protected Branches:**
 - Temporarily disable branch protection rules to force push
 - Re-enable protection immediately after pushing
 

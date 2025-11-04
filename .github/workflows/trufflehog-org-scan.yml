@@ -1,6 +1,9 @@
 name: "TruffleHog – Org Scan (Non-Public Repos)"
 
 on:
+  schedule:
+    # Run every Sunday at 6 PM UTC (Sunday evening)
+    - cron: '0 18 * * 0'
   push:
     branches:
       - '**'
@@ -635,7 +638,8 @@ jobs:
       GH_PAT: ${{ secrets.GH_PAT }}
       RUN_URL: ${{ github.run_url }}
       OPEN_ISSUES: ${{ inputs.open_issues }}
-      ISSUES_CREATION_ORGS: ${{ inputs.issues_creation_orgs }}
+      INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
+      VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -672,6 +676,12 @@ jobs:
             exit 0
           fi
           # Check if issues should be created for this org
+          # Priority: INPUT_ISSUES_ORGS > VAR_ISSUES_ORGS
+          ISSUES_CREATION_ORGS="${INPUT_ISSUES_ORGS:-}"
+          if [ -z "${ISSUES_CREATION_ORGS}" ]; then
+            ISSUES_CREATION_ORGS="${VAR_ISSUES_ORGS:-}"
+          fi
+
           CREATE_ISSUES="false"
           if [ "${OPEN_ISSUES}" = "true" ]; then
             if [ -z "${ISSUES_CREATION_ORGS}" ]; then
