@@ -405,20 +405,28 @@ class GHClient:
 
     def search_issue_by_title(self, repo: str, title: str) -> bool:
         """
-        Search for an open issue by exact title match using Issues API.
+        Search for an issue (open or closed) by exact title match using Issues API.
 
         Note: Uses /repos/{repo}/issues instead of /search/issues because
         fine-grained PATs may not have access to the Search API.
+
+        Searches both open and closed issues to prevent re-creating issues
+        for findings that were previously reported.
         """
         try:
-            # List open issues and filter by title (API doesn't support title filtering)
-            # We only check the first page (30 issues) to avoid excessive API calls
-            data = self.call("GET", f"/repos/{repo}/issues?state=open&per_page=30", None)
-            if isinstance(data, list):
-                for issue in data:
-                    if isinstance(issue, dict) and issue.get("title") == title:
-                        logging.info("Found existing open issue in %s with title: %s", repo, title)
-                        return True
+            # Check both open and closed issues (state=all)
+            # We check first 2 pages (60 issues) to cover recent history
+            for page in [1, 2]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=all&per_page=30&page={page}", None)
+                if isinstance(data, list):
+                    for issue in data:
+                        if isinstance(issue, dict) and issue.get("title") == title:
+                            state = issue.get("state", "unknown")
+                            logging.info("Found existing issue in %s with title: %s (state=%s)", repo, title, state)
+                            return True
+                    # If we got fewer than 30 results, no need to check next page
+                    if len(data) < 30:
+                        break
             return False
         except HTTPError as e:
             logging.warning("Failed to list issues in %s: HTTP %d (may create duplicate)", repo, e.code)
@@ -474,19 +482,22 @@ class GHClient:
 
     def search_recent_issues_with_hash(self, repo: str, title_pattern: str, hash_pattern: str, days: int = DEFAULT_ISSUE_DEDUP_DAYS) -> bool:
         """
-        Search for recent issues matching both title and hash patterns using Issues API.
+        Search for issues (open or closed) matching both title and hash patterns using Issues API.
 
         Looks for issues with the same findings hash to prevent duplicates even if
-        reported on different days.
+        reported on different days or if the original issue was closed.
+
+        Searches both open and closed issues to avoid re-notifying about the same
+        secrets that were already reported.
         """
         import datetime
         # Use timezone-aware datetime to match GitHub API timestamps
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         try:
-            # List open issues sorted by created date
-            # Check first 3 pages (90 issues) for hash matches
-            for page in [1, 2, 3]:
-                data = self.call("GET", f"/repos/{repo}/issues?state=open&sort=created&direction=desc&per_page=30&page={page}", None)
+            # List ALL issues (open and closed) sorted by created date
+            # Check first 5 pages (150 issues) for hash matches
+            for page in [1, 2, 3, 4, 5]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=all&sort=created&direction=desc&per_page=30&page={page}", None)
                 if not isinstance(data, list):
                     break
 
@@ -505,8 +516,9 @@ class GHClient:
                         try:
                             created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                             if created >= cutoff:
-                                logging.info("Found recent open issue in %s with same findings hash '%s' (created %s)",
-                                           repo, hash_pattern, created_at)
+                                state = issue.get("state", "unknown")
+                                logging.info("Found existing issue in %s with same findings hash '%s' (created %s, state=%s)",
+                                           repo, hash_pattern, created_at, state)
                                 return True
                         except (ValueError, AttributeError):
                             pass
@@ -928,17 +940,17 @@ def process_repo(repo: str,
     today = datetime.date.today().isoformat()
     title = f"{title_prefix} Secrets scan report - {today} ({findings_hash})"
 
-    # Check for exact match (same findings)
+    # Check for exact match (same findings, same day)
     if gh.search_issue_by_title(repo, title):
-        logging.info("Open issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
+        logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
         return (repo, False)
 
-    # Check for recent issues with same findings hash (within 30 days)
-    # This catches cases where the same findings were reported before
+    # Check for issues with same findings hash within last 90 days (open or closed)
+    # This prevents re-notifying about secrets that were already reported
     title_pattern = f"{title_prefix} Secrets scan report"
     hash_pattern = f"({findings_hash})"
-    if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=30):
-        logging.info("Recent open issue exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
+    if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=90):
+        logging.info("Issue already exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
         return (repo, False)
 
     auto = labels_for_items(items, extra_labels)
