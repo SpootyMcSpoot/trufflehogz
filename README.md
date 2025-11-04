@@ -265,42 +265,36 @@ max_finding_log_lines: 1000
 ## Architecture
 
 ### Workflow Structure
-```
-┌─────────────────────────────────────────┐
-│ 1. resolve-matrix                        │
-│    Parse org names from input/variable   │
-└────────────┬────────────────────────────┘
-             │
-┌────────────▼────────────────────────────┐
-│ 2. plan                                  │
-│    • Count repos per org                 │
-│    • Calculate optimal shard count       │
-│    • Output task matrix                  │
-└────────────┬────────────────────────────┘
-             │
-┌────────────▼────────────────────────────┐
-│ 3. scan-org (parallel)                   │
-│    • Load TruffleHog image (cached)      │
-│    • Enumerate repos for shard           │
-│    • Scan repos concurrently             │
-│    • Upload per-shard artifacts          │
-└────────────┬────────────────────────────┘
-             │
-┌────────────▼────────────────────────────┐
-│ 4. summarize-org (per org)               │
-│    • Download all shard artifacts        │
-│    • Merge NDJSON files                  │
-│    • Filter false positives              │
-│    • Generate summary                    │
-│    • Create issues (optional)            │
-└────────────┬────────────────────────────┘
-             │
-┌────────────▼────────────────────────────┐
-│ 5. workflow-summary                      │
-│    • Show configuration used             │
-│    • Display performance metrics         │
-│    • Link to per-org summaries           │
-└─────────────────────────────────────────┘
+
+```mermaid
+flowchart TD
+    Start([Workflow Triggered]) --> ResolveMatrix[1. resolve-matrix<br/>Parse org names from input/variable]
+
+    ResolveMatrix --> Plan[2. plan<br/>Count repos per org<br/>Calculate optimal shard count<br/>Output task matrix]
+
+    Plan --> ScanOrg1[3a. scan-org shard 1]
+    Plan --> ScanOrg2[3b. scan-org shard 2]
+    Plan --> ScanOrg3[3c. scan-org shard N]
+
+    ScanOrg1 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
+    ScanOrg2 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
+    ScanOrg3 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
+
+    Summarize[4. summarize-org per org<br/>Download all shard artifacts<br/>Merge NDJSON files<br/>Filter false positives<br/>Generate summary<br/>Create issues optional]
+
+    Summarize --> WorkflowSummary[5. workflow-summary<br/>Show configuration used<br/>Display performance metrics<br/>Link to per-org summaries]
+
+    WorkflowSummary --> End([Workflow Complete])
+
+    style Start fill:#e1f5e1
+    style End fill:#e1f5e1
+    style ResolveMatrix fill:#e3f2fd
+    style Plan fill:#fff3e0
+    style ScanOrg1 fill:#f3e5f5
+    style ScanOrg2 fill:#f3e5f5
+    style ScanOrg3 fill:#f3e5f5
+    style Summarize fill:#fce4ec
+    style WorkflowSummary fill:#e0f2f1
 ```
 
 ### Sharding Strategy
