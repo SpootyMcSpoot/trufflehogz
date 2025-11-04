@@ -472,6 +472,54 @@ class GHClient:
             logging.warning("Failed to list recent issues in %s: HTTP %d", repo, e.code)
             return False
 
+    def search_recent_issues_with_hash(self, repo: str, title_pattern: str, hash_pattern: str, days: int = DEFAULT_ISSUE_DEDUP_DAYS) -> bool:
+        """
+        Search for recent issues matching both title and hash patterns using Issues API.
+
+        Looks for issues with the same findings hash to prevent duplicates even if
+        reported on different days.
+        """
+        import datetime
+        # Use timezone-aware datetime to match GitHub API timestamps
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        try:
+            # List open issues sorted by created date
+            # Check first 3 pages (90 issues) for hash matches
+            for page in [1, 2, 3]:
+                data = self.call("GET", f"/repos/{repo}/issues?state=open&sort=created&direction=desc&per_page=30&page={page}", None)
+                if not isinstance(data, list):
+                    break
+
+                for issue in data:
+                    if not isinstance(issue, dict):
+                        continue
+
+                    # Check if title matches both patterns
+                    issue_title = issue.get("title", "")
+                    if title_pattern not in issue_title or hash_pattern not in issue_title:
+                        continue
+
+                    # Check if within date range
+                    created_at = issue.get("created_at", "")
+                    if created_at:
+                        try:
+                            created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            if created >= cutoff:
+                                logging.info("Found recent open issue in %s with same findings hash '%s' (created %s)",
+                                           repo, hash_pattern, created_at)
+                                return True
+                        except (ValueError, AttributeError):
+                            pass
+
+                # If we got fewer than 30 results, no need to check next page
+                if len(data) < 30:
+                    break
+
+            return False
+        except HTTPError as e:
+            logging.warning("Failed to list recent issues with hash in %s: HTTP %d", repo, e.code)
+            return False
+
     def get_labels(self, repo: str) -> List[str]:
         names: List[str] = []
         page = 1
@@ -741,6 +789,36 @@ def write_markdown_summary(ndjson_path: str,
 
 # ---------------------------- Issue creation ----------------------------
 
+def compute_findings_hash(items: List[Dict[str, Any]]) -> str:
+    """
+    Compute a deterministic hash from findings to uniquely identify this set of secrets.
+
+    Uses file paths, line numbers, and commits to create a stable identifier.
+    Same findings = same hash, allowing duplicate detection even across days.
+    """
+    import hashlib
+
+    # Create a stable, sorted representation of all findings
+    stable_items = []
+    for item in items:
+        # Use key characteristics: file, line, commit
+        stable_items.append((
+            item.get("file", ""),
+            item.get("line", -1),
+            item.get("commit", "")
+        ))
+
+    # Sort to ensure deterministic ordering
+    stable_items.sort()
+
+    # Hash the representation
+    hasher = hashlib.sha256()
+    for file, line, commit in stable_items:
+        hasher.update(f"{file}:{line}:{commit}".encode("utf-8"))
+
+    # Return first 8 characters (short but unique enough)
+    return hasher.hexdigest()[:8]
+
 def repo_is_actionable(meta: Optional[dict]) -> bool:
     if not meta:
         return False
@@ -845,18 +923,22 @@ def process_repo(repo: str,
     if not repo_is_actionable(meta):
         return (repo, False)
 
+    # Compute unique hash for these findings to enable duplicate detection
+    findings_hash = compute_findings_hash(items)
     today = datetime.date.today().isoformat()
-    title = f"{title_prefix} Secrets scan report - {today}"
+    title = f"{title_prefix} Secrets scan report - {today} ({findings_hash})"
 
-    # Check for exact match (same day issue)
+    # Check for exact match (same findings)
     if gh.search_issue_by_title(repo, title):
-        logging.info("Open issue already exists today for %s", repo)
+        logging.info("Open issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
         return (repo, False)
 
-    # Check for recent issues (within 7 days) to avoid spam
+    # Check for recent issues with same findings hash (within 30 days)
+    # This catches cases where the same findings were reported before
     title_pattern = f"{title_prefix} Secrets scan report"
-    if gh.search_recent_issues(repo, title_pattern, days=7):
-        logging.info("Recent open issue exists in %s, skipping to avoid duplicates", repo)
+    hash_pattern = f"({findings_hash})"
+    if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=30):
+        logging.info("Recent open issue exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
         return (repo, False)
 
     auto = labels_for_items(items, extra_labels)
