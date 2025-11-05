@@ -180,87 +180,7 @@ These settings have fixed values optimized for most use cases:
 
 To change these settings, modify the workflow file directly (.github/workflows/trufflehog-org-scan.yml).
 
-### Configuration Examples
-
-These examples show how to configure workflow inputs for different scanning scenarios.
-
-#### Daily Scans (Maximum Speed)
-```yaml
-branch_strategy: main-only
-scan_mode: recent
-scan_lookback_days: 1
-scan_parallel: 16
-per_repo_timeout: 3m
-adaptive_timeout: true
-```
-**Expected runtime**: 2-5 min for most orgs
-**Use case**: Quick daily checks for new secrets in main branch only
-
-#### Weekly Scans (Recommended)
-```yaml
-branch_strategy: main-recent
-scan_mode: recent
-scan_lookback_days: 7
-branch_lookback_days: 30
-scan_parallel: 12
-adaptive_timeout: true
-skip_stale_branches: true
-```
-**Expected runtime**: 3-10 min for most orgs (RECOMMENDED)
-**Use case**: Regular scanning of active development branches
-**Note**: Uses optimized defaults
-
-#### Monthly Deep Scans (Comprehensive)
-```yaml
-deep_scan: true
-per_repo_timeout: 10m
-scan_parallel: 8
-adaptive_timeout: true
-```
-**Expected runtime**: 15-45 min for most orgs
-**Use case**: Full audit of all branches and complete commit history
-**Note**: `deep_scan: true` automatically sets `branch_strategy: all`, `scan_mode: full`, and `skip_stale_branches: false`
-
-#### Custom Deep Scan (Without deep_scan Flag)
-```yaml
-branch_strategy: all
-scan_mode: full
-per_repo_timeout: 10m
-scan_parallel: 8
-branch_lookback_days: 90
-scan_lookback_days: 30
-skip_stale_branches: false
-adaptive_timeout: true
-```
-**Expected runtime**: 15-45 min for most orgs
-**Use case**: When you need granular control over deep scanning parameters
-
-#### Large Organization (1000+ repos)
-```yaml
-repos_per_shard: 100
-shard_cap: 20
-scan_parallel: 16
-branch_strategy: main-only
-scan_mode: recent
-scan_lookback_days: 3
-per_repo_timeout: 5m
-adaptive_timeout: true
-```
-**Expected runtime**: 5-12 min
-**Use case**: Fast scanning of large organizations
-**Note**: To skip large repos, edit workflow file to change `max_repo_size_kb` from 0
-
-#### Initial Baseline Scan (First Run)
-```yaml
-deep_scan: true
-per_repo_timeout: 15m
-scan_parallel: 4
-adaptive_timeout: true
-max_finding_log_lines: 1000
-```
-**Expected runtime**: 30-90 min for most orgs
-**Use case**: Comprehensive initial scan to establish baseline
-**Note**: Lower parallelism to avoid rate limits on first run
+For detailed configuration examples (daily scans, weekly scans, deep scans, large orgs, etc.), see **[CONFIGURATION.md](CONFIGURATION.md)**.
 
 ## Architecture
 
@@ -324,123 +244,19 @@ PERMISSION_ANALYSIS.md            # Technical API endpoint reference
 
 ## Setup
 
-### 1. GitHub Personal Access Token (PAT)
+### Quick Setup Steps
 
-You need a GitHub token with appropriate permissions to scan repositories and optionally create issues. GitHub offers two token types:
+1. **Create GitHub Personal Access Token (PAT)**
+   - Classic PAT: `repo` + `read:org` scopes
+   - Fine-grained PAT: Contents (Read) + Members (Read) + Issues (Read/Write for issue creation)
 
-#### Fine-Grained Personal Access Token (Recommended)
+2. **Store token as repository secret**: `GH_PAT`
 
-Fine-grained tokens offer better security with granular, time-limited permissions scoped to specific repositories or organizations.
+3. **Configure organizations** (choose one):
+   - Repository variable: `TRUFFLEHOG_ORGS=org1,org2,org3`
+   - Manual input when running workflow
 
-**To create a fine-grained PAT:**
-1. Go to Settings → Developer settings → Personal access tokens → Fine-grained tokens
-2. Click "Generate new token"
-3. Set token name, expiration, and description
-4. Under "Repository access", select:
-   - **"All repositories"** (if scanning all orgs)
-   - OR **"Only select repositories"** (choose specific repos)
-5. Under "Permissions" → "Repository permissions", set:
-
-**Minimum permissions (scanning only):**
-| Permission | Access Level | Purpose |
-|------------|-------------|---------|
-| Contents | **Read** | Access repository code and history |
-| Metadata | **Read** | Access basic repository information (automatic) |
-
-**Additional permissions (for issue creation):**
-| Permission | Access Level | Purpose |
-|------------|-------------|---------|
-| Issues | **Read and write** | Create and manage issues for findings |
-
-**For organization scanning:**
-6. Under "Permissions" → "Organization permissions", set:
-   - **Members**: Read (access to enumerate org repos)
-
-**Important notes for fine-grained tokens:**
-- Tokens are scoped per-organization; you may need multiple tokens for multiple orgs
-- Expiration is required (max 1 year); set a reminder to rotate
-- More secure than classic PATs but requires more setup
-
-#### Classic Personal Access Token (Simpler)
-
-Classic tokens are simpler but have broader permissions and no expiration requirement.
-
-**To create a classic PAT:**
-1. Go to Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Click "Generate new token (classic)"
-3. Set note (description) and expiration
-4. Select scopes:
-
-**Minimum permissions (scanning only):**
-| Scope | Purpose |
-|-------|---------|
-| `repo` | Full control of private repositories (read access to code) |
-| `read:org` | Read org membership and teams (enumerate repos) |
-
-**Additional permissions (for issue creation):**
-| Scope | Purpose |
-|-------|---------|
-| `repo` already includes issue creation | No additional scope needed |
-
-**Important notes for classic tokens:**
-- `repo` scope is broad (includes read/write for code, issues, PRs, etc.)
-- Consider using fine-grained tokens for better security
-- Set expiration and rotate regularly
-
-#### Comparison: Fine-Grained vs Classic
-
-| Feature | Fine-Grained | Classic |
-|---------|-------------|---------|
-| Security | Better (granular permissions) | Broader (all-or-nothing scopes) |
-| Setup Complexity | More complex | Simpler |
-| Multi-Org Support | Requires token per org | Single token for all orgs |
-| Expiration | Required (max 1 year) | Optional |
-| Recommended For | Production, security-conscious | Quick setup, testing |
-
-#### Storing the Token
-
-After creating either token type, store it as a repository secret:
-
-1. Go to your repository Settings → Secrets and variables → Actions
-2. Click "New repository secret"
-3. Name: **`GH_PAT`**
-4. Value: Paste your token
-5. Click "Add secret"
-
-#### Troubleshooting Token Permissions
-
-**401 Unauthorized errors:**
-- Classic PAT: Ensure `repo` and `read:org` scopes are selected
-- Fine-grained PAT: Ensure "Contents: Read" and "Members: Read" are granted
-- Verify token hasn't expired
-- Check that the user has access to the target organizations
-
-**403 Forbidden errors:**
-- User may not have access to the organization
-- For private orgs, user must be a member
-- Fine-grained token may be scoped to wrong repositories/orgs
-
-**Issues not being created:**
-- Classic PAT: `repo` scope already includes issue creation (no change needed)
-- Fine-grained PAT: Ensure "Issues: Read and write" permission is granted
-- Verify `open_issues: true` is set in workflow input
-- Check that repository has issues enabled
-
-### 2. Organization Configuration
-
-**Option A: Repository Variable (Recommended for defaults)**
-```
-Repository Settings → Secrets and variables → Actions → Variables
-Name: TRUFFLEHOG_ORGS
-Value: org1,org2,org3
-```
-
-**Option B: Manual Text Input**
-Use the `org_names` input when clicking "Run workflow" (supports comma-separated list for single or multiple orgs)
-
-**Priority Order**: `org_names` text input > `TRUFFLEHOG_ORGS` variable
-
-### 3. False Positive Filtering (Optional)
+4. **Optional: Configure false positive filtering**
 
 Edit `.github/trufflehog/false_positives.txt`:
 ```regex
@@ -462,6 +278,8 @@ file=.*README(\.md|\.rst)?$
 ```
 detector=<name> | verified=<bool> | repo=<owner/name> | file=<path> | redacted=<token>
 ```
+
+**For detailed setup instructions**, including PAT creation, troubleshooting, and organization configuration, see **[SETUP.md](SETUP.md)**.
 
 ## Workflow Summary
 
@@ -587,240 +405,15 @@ Example issue body showing the remediation section:
 
 ## Remediating Discovered Secrets
 
-When TruffleHog discovers secrets in your repository, follow these steps to properly remediate them:
+When TruffleHog discovers secrets in your repository:
 
-### 1. Immediate Response (Critical: Do This First)
+1. **Rotate/revoke credentials immediately** (assume already compromised)
+2. **Remove secrets from current files**
+3. **Purge secrets from git history** (git rebase for recent commits, git-filter-repo for old commits)
+4. **Force push and notify team**
+5. **Verify and add prevention measures**
 
-**Rotate or Revoke Credentials Immediately**
-- **Before** cleaning git history, assume the secret is already compromised
-- Rotate API keys, passwords, tokens, or certificates
-- Revoke the compromised credentials in the service provider's dashboard
-- Generate new credentials and store them securely (use a secrets manager)
-
-**Examples:**
-- AWS: Deactivate and delete the IAM access key, create a new one
-- GitHub: Revoke the personal access token, generate a new one
-- Database passwords: Change the password immediately
-- API keys: Regenerate the key in the provider's dashboard
-
-### 2. Remove Secrets from Current Files
-
-Remove the secret from your current working tree:
-
-```bash
-# Edit the file and remove the secret
-vim path/to/file-with-secret.py
-
-# Or replace the secret with a placeholder/environment variable
-sed -i 's/sk-live-abc123xyz/os.getenv("API_KEY")/g' config.py
-
-# Commit the change
-git add path/to/file-with-secret.py
-git commit -m "Remove hardcoded secret, use environment variable"
-```
-
-### 3. Purge Secrets from Git History
-
-**CRITICAL**: Rewriting git history is a destructive operation. Coordinate with your team and ensure everyone is aware.
-
-Choose the appropriate method based on when the secret was committed:
-
-#### For Recent Commits (Simplest - Use This When Possible)
-
-If the secret was committed recently (last few commits), use interactive rebase:
-
-```bash
-# View recent commits to find the one with the secret
-git log --oneline -10
-
-# Interactive rebase to edit/remove commits
-# Replace N with number of commits to go back
-git rebase -i HEAD~N
-
-# In the editor, change 'pick' to 'drop' for commits to remove
-# Or change to 'edit' to modify the commit
-# Save and close
-
-# If you chose 'edit', make your changes now:
-vim path/to/file-with-secret.py
-git add path/to/file-with-secret.py
-git rebase --continue
-
-# Force push to remote (see step 4 below)
-```
-
-**Alternative for very recent commits**: If the secret is only in the last unpushed commit, simply amend:
-
-```bash
-# Fix the file
-vim path/to/file-with-secret.py
-git add path/to/file-with-secret.py
-
-# Amend the last commit
-git commit --amend --no-edit
-```
-
-#### For Old or Complex History (Industry Standard: git-filter-repo)
-
-For secrets deep in history or across multiple branches, use [git-filter-repo](https://github.com/newren/git-filter-repo) - the official Git-recommended tool that replaced git-filter-branch.
-
-**Installation:**
-```bash
-# macOS
-brew install git-filter-repo
-
-# Linux (Debian/Ubuntu)
-sudo apt-get install git-filter-repo
-
-# Or via pip
-pip install git-filter-repo
-```
-
-**Usage:**
-```bash
-# ALWAYS create a backup first
-git clone https://github.com/org/repo.git repo-backup
-cd repo
-
-# Method 1: Remove a specific file from all history
-git filter-repo --path path/to/secret-file.py --invert-paths
-
-# Method 2: Replace text across all history (recommended for secrets in code)
-echo 'sk-live-abc123xyz==>REDACTED' > /tmp/replacements.txt
-git filter-repo --replace-text /tmp/replacements.txt
-
-# Method 3: Multiple text replacements
-cat > /tmp/replacements.txt <<EOF
-sk-live-abc123xyz==>REDACTED
-ghp_OldToken123456789==>REDACTED
-AKIA1234EXAMPLEKEY==>REDACTED
-EOF
-git filter-repo --replace-text /tmp/replacements.txt
-
-# Verify the secret is gone
-git log --all --oneline --source -S 'sk-live-abc123xyz'
-# Should return no results
-```
-
-**Why git-filter-repo?**
-- Official replacement for git-filter-branch (deprecated since Git 2.38)
-- 10-100x faster than git-filter-branch
-- Safer: catches common mistakes and pitfalls
-- Better for large repositories
-- Actively maintained and recommended by Git developers
-
-### 4. Force Push and Notify Team
-
-**WARNING**: Force pushing rewrites history. Ensure all team members are aware and prepared.
-
-```bash
-# Force push to remote (this will rewrite history on remote)
-git push origin --force --all
-git push origin --force --tags
-
-# Notify all team members to re-clone or reset their local copies
-```
-
-**Team members should:**
-```bash
-# Option 1: Delete and re-clone (safest)
-cd ..
-rm -rf old-repo
-git clone https://github.com/org/repo.git
-
-# Option 2: Reset local repo (be careful, loses local changes)
-git fetch origin
-git reset --hard origin/main  # or your branch name
-git clean -fdx
-```
-
-### 5. Post-Remediation Steps
-
-After cleaning git history:
-
-1. **Verify the secret is gone**: Run TruffleHog again on the cleaned repo
-   ```bash
-   docker run --rm -v "$PWD:/work" -w /work \
-     ghcr.io/trufflesecurity/trufflehog:3.90.6 \
-     git file:///work --only-verified
-   ```
-
-2. **Invalidate GitHub's cache** (for public repos): Contact GitHub Support to purge cached refs
-
-3. **Update protection rules**:
-   - Add the file/pattern to `.gitignore` if it shouldn't be tracked
-   - Set up pre-commit hooks to prevent future secret commits
-   - Enable GitHub secret scanning and push protection
-
-4. **Add prevention measures**:
-   ```bash
-   # Install pre-commit hook with TruffleHog
-   pip install pre-commit
-
-   # Create .pre-commit-config.yaml
-   cat > .pre-commit-config.yaml <<EOF
-   repos:
-     - repo: https://github.com/trufflesecurity/trufflehog
-       rev: v3.90.6
-       hooks:
-         - id: trufflehog
-           name: TruffleHog Secret Scan
-           entry: trufflehog git file://. --since-commit HEAD --only-verified --fail
-   EOF
-
-   # Install the hook
-   pre-commit install
-   ```
-
-5. **Monitor for exposure**:
-   - Check if the secret was exposed in any forks
-   - Monitor audit logs for unauthorized usage
-   - Review access logs for suspicious activity
-
-### Important Considerations
-
-**WARNING - Public Repositories:**
-- Once pushed to a public repo, assume the secret was harvested by bots
-- Secrets can persist in forks even after you clean your history
-- Contact GitHub Support to purge cached views of commits
-
-**WARNING - Private Repositories:**
-- Secrets may still be visible to anyone who had access
-- Check who cloned the repo while the secret was exposed
-- Consider if any CI/CD logs or artifacts contain the secret
-
-**WARNING - Large Repositories:**
-- History rewriting can take significant time (hours for large repos)
-- Test the process on a mirror/backup first
-- git-filter-repo is optimized for large repositories (10-100x faster than legacy tools)
-
-**WARNING - Protected Branches:**
-- Temporarily disable branch protection rules to force push
-- Re-enable protection immediately after pushing
-
-### Alternative: Secrets Management
-
-To prevent secrets from entering git in the first place:
-
-```bash
-# Use environment variables
-export DATABASE_PASSWORD="secret"
-python app.py
-
-# Use a .env file (add to .gitignore)
-echo "DATABASE_PASSWORD=secret" > .env
-echo ".env" >> .gitignore
-
-# Use a secrets manager
-# AWS Secrets Manager, HashiCorp Vault, Azure Key Vault, etc.
-```
-
-**Best practices:**
-- Store secrets in environment variables or secrets managers
-- Use GitHub Secrets for Actions workflows
-- Never commit `.env` files (add to `.gitignore`)
-- Use placeholder values in example/template files
-- Enable GitHub's push protection for secret scanning
+**For complete remediation instructions**, including git-filter-repo usage, team coordination, and prevention best practices, see **[REMEDIATION.md](REMEDIATION.md)**.
 
 ## Testing
 
@@ -859,113 +452,29 @@ docker run --rm -v "$PWD:/work" -w /work \
   > findings-test.ndjson
 ```
 
-## Performance Tuning
+## Troubleshooting & Performance Tuning
 
-### If Scans Are Too Slow
-1. **Reduce branch scope**: Use `branch_strategy: main-only`
-2. **Shorten time window**: Set `scan_lookback_days: 1` or `3`
-3. **Reduce branch lookback**: Set `branch_lookback_days: 7` or `14`
-4. **Increase parallelism**: Set `scan_parallel: 16`
-5. **Enable adaptive timeout**: Set `adaptive_timeout: true` (enabled by default)
-6. **Skip stale branches**: Ensure `skip_stale_branches: true` (enabled by default)
-7. **Skip large repos**: Edit workflow file to set `max_repo_size_kb: 500000`
+**Common scenarios:**
+- Scans too slow? Reduce branch scope, increase parallelism
+- Missing findings? Use deep scan mode, expand time windows
+- Rate limits? Reduce concurrency, lower shard count
+- Timeouts? Enable adaptive timeout, increase per-repo timeout
 
-### If Missing Findings
-1. **Use deep scan mode**: Set `deep_scan: true` for comprehensive scanning
-2. **Expand branch scope**: Use `branch_strategy: all` or `main-recent`
-3. **Expand time window**: Set `scan_lookback_days: 14` or `30`
-4. **Expand branch lookback**: Set `branch_lookback_days: 60` or `90`
-5. **Include more results**: Set `scan_results: all`
-6. **Disable branch skipping**: Set `skip_stale_branches: false`
-7. **Full history scan**: Set `scan_mode: full`
-
-### If Hitting Rate Limits
-1. **Reduce concurrent scans**: Set `scan_parallel: 4`
-2. **Reduce shard count**: Set `shard_cap: 5`
-3. **Add delays**: The workflow has built-in rate limiting (4 calls/sec)
-4. **Stagger scan times**: Run scans at different times for different orgs
-
-### Timeout Issues
-1. **Enable adaptive timeout**: Set `adaptive_timeout: true` (enabled by default)
-2. **Increase base timeout**: Set `per_repo_timeout: 10m` or `15m`
-3. **Skip large repos**: Edit workflow file to set `max_repo_size_kb: 100000`
-4. **Reduce scan scope**: Use `scan_mode: recent` with shorter `scan_lookback_days`
-
-### Deep Scan Best Practices
-When using `deep_scan: true`:
-1. **Run less frequently**: Monthly or quarterly, not daily
-2. **Increase timeout**: Set `per_repo_timeout: 10m` or `15m`
-3. **Reduce parallelism**: Set `scan_parallel: 4` or `8` to avoid rate limits
-4. **Monitor for timeouts**: Check logs and adjust timeout as needed
-5. **Expect longer runtime**: Budget 30-90 minutes for large organizations
-
-## Monitoring
-
-### Key Metrics to Watch
-- **Total scan time**: From workflow summary
-- **Timeout count**: In errors NDJSON
-- **Shard completion time**: Check for imbalance
-- **API rate limit hits**: In workflow logs
-
-### Optimization Indicators
-- All shards complete within 5 min of each other → Good load balancing
-- One shard takes 2x+ longer → Enable `enable_size_based_sharding`
-- Many timeouts → Increase `per_repo_timeout` or enable `adaptive_timeout`
-- Missing findings → Increase `scan_lookback_days` or change `branch_strategy`
-
-## Troubleshooting
-
-### Common Issues
-
-**No findings in summary but artifacts exist**
-- Check stderr logs: `tmp-logs-<org>/*.stderr.log`
-- Verify false positive patterns aren't too broad
-- Ensure `scan_results` includes desired result types
-
-**401/403 errors**
-- Classic PAT: Verify `repo` and `read:org` scopes are selected
-- Fine-grained PAT: Verify "Contents: Read" and "Members: Read" permissions
-- Check PAT hasn't expired
-- Confirm user has access to organizations
-- See detailed troubleshooting in [Setup → Troubleshooting Token Permissions](#troubleshooting-token-permissions)
-
-**Timeouts on specific repos**
-- Enable `adaptive_timeout: true`
-- Check repo size (some repos have huge histories)
-- Consider adding to `max_repo_size_kb` filter
-
-**Missing branches**
-- Check `branch_strategy` setting (try `all` or `main-recent`)
-- Review `branch_lookback_days` value (increase to 60 or 90)
-- Set `skip_stale_branches: false` to scan all branches
-- Consider using `deep_scan: true` for comprehensive coverage
-
-**Missing old commits**
-- Set `scan_mode: full` instead of `recent`
-- Increase `scan_lookback_days` to 14, 30, or more
-- Use `deep_scan: true` for complete history scan
-
-**Empty NDJSON files**
-- Check TruffleHog version compatibility
-- Verify repos aren't all archived/empty
-- Review `scan_results` setting
-- Confirm time-based filters aren't excluding all commits
-
-**Deep scan taking too long**
-- Increase `per_repo_timeout` to 15m
-- Reduce `scan_parallel` to 4 or 8
-- Enable `adaptive_timeout: true`
-- Consider splitting into multiple smaller runs
+**For complete troubleshooting guide**, performance optimization tips, monitoring metrics, and issue resolution, see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)**.
 
 ## Additional Documentation
 
-### Core Documentation
+### Setup & Configuration
+- **[SETUP.md](SETUP.md)**: Complete setup guide including PAT creation, organization configuration, and troubleshooting
+- **[CONFIGURATION.md](CONFIGURATION.md)**: Detailed configuration examples for different scanning scenarios (daily, weekly, deep scans, large orgs)
+
+### Operations & Troubleshooting
+- **[REMEDIATION.md](REMEDIATION.md)**: Comprehensive guide for remediating discovered secrets with git-filter-repo
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)**: Performance tuning, monitoring metrics, and common issue resolution
+
+### Technical Reference
 - **[PERMISSION_ANALYSIS.md](PERMISSION_ANALYSIS.md)**: Complete API endpoint reference and permission requirements for both Classic and Fine-Grained PATs
 - **[TEST_FIXTURES.md](TEST_FIXTURES.md)**: Documentation of intentional test secrets included in this repository for TruffleHog validation
-
-### Important Notes
-
-**Test Data**: This repository contains intentional fake secrets for testing TruffleHog detection. See [TEST_FIXTURES.md](TEST_FIXTURES.md) for complete details on test fixtures.
 
 ## Related Resources
 
