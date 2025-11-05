@@ -286,15 +286,15 @@ flowchart TD
 
     WorkflowSummary --> End([Workflow Complete])
 
-    style Start fill:#e1f5e1
-    style End fill:#e1f5e1
-    style ResolveMatrix fill:#e3f2fd
-    style Plan fill:#fff3e0
-    style ScanOrg1 fill:#f3e5f5
-    style ScanOrg2 fill:#f3e5f5
-    style ScanOrg3 fill:#f3e5f5
-    style Summarize fill:#fce4ec
-    style WorkflowSummary fill:#e0f2f1
+    style Start fill:#2e7d32,stroke:#1b5e20,color:#fff
+    style End fill:#2e7d32,stroke:#1b5e20,color:#fff
+    style ResolveMatrix fill:#1976d2,stroke:#0d47a1,color:#fff
+    style Plan fill:#f57c00,stroke:#e65100,color:#fff
+    style ScanOrg1 fill:#7b1fa2,stroke:#4a148c,color:#fff
+    style ScanOrg2 fill:#7b1fa2,stroke:#4a148c,color:#fff
+    style ScanOrg3 fill:#7b1fa2,stroke:#4a148c,color:#fff
+    style Summarize fill:#c2185b,stroke:#880e4f,color:#fff
+    style WorkflowSummary fill:#0097a7,stroke:#006064,color:#fff
 ```
 
 ### Sharding Strategy
