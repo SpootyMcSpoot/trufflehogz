@@ -1,155 +1,109 @@
 # Setup Guide
 
-Complete setup instructions for TruffleHog Organization Scanner.
+Complete setup for TruffleHog Organization Scanner.
 
-## Table of Contents
-- [GitHub Personal Access Token (PAT)](#github-personal-access-token-pat)
-- [Organization Configuration](#organization-configuration)
-- [False Positive Filtering](#false-positive-filtering)
+## GitHub Personal Access Token
 
-## GitHub Personal Access Token (PAT)
+### Fine-Grained PAT (Recommended)
 
-You need a GitHub token with appropriate permissions to scan repositories and optionally create issues. GitHub offers two token types:
+**Create**: Settings → Developer settings → Personal access tokens → Fine-grained tokens
 
-### Fine-Grained Personal Access Token (Recommended)
+**Permissions**:
+- **Repository**: Contents (Read), Metadata (Read), Issues (Read/Write for issue creation)
+- **Organization**: Members (Read)
+- **Repository access**: All repositories or specific repos
 
-Fine-grained tokens offer better security with granular, time-limited permissions scoped to specific repositories or organizations.
+**Notes**:
+- Scoped per-organization (may need multiple tokens)
+- Max 1 year expiration (required)
+- More secure but complex setup
 
-**To create a fine-grained PAT:**
-1. Go to Settings → Developer settings → Personal access tokens → Fine-grained tokens
-2. Click "Generate new token"
-3. Set token name, expiration, and description
-4. Under "Repository access", select:
-   - **"All repositories"** (if scanning all orgs)
-   - OR **"Only select repositories"** (choose specific repos)
-5. Under "Permissions" → "Repository permissions", set:
+### Classic PAT (Simpler)
 
-**Minimum permissions (scanning only):**
-| Permission | Access Level | Purpose |
-|------------|-------------|---------|
-| Contents | **Read** | Access repository code and history |
-| Metadata | **Read** | Access basic repository information (automatic) |
+**Create**: Settings → Developer settings → Personal access tokens → Tokens (classic)
 
-**Additional permissions (for issue creation):**
-| Permission | Access Level | Purpose |
-|------------|-------------|---------|
-| Issues | **Read and write** | Create and manage issues for findings |
+**Scopes**:
+- `repo` (includes code read + issue creation)
+- `read:org` (enumerate repos)
 
-**For organization scanning:**
-6. Under "Permissions" → "Organization permissions", set:
-   - **Members**: Read (access to enumerate org repos)
+**Notes**:
+- Broader permissions
+- Single token for all orgs
+- Optional expiration
 
-**Important notes for fine-grained tokens:**
-- Tokens are scoped per-organization; you may need multiple tokens for multiple orgs
-- Expiration is required (max 1 year); set a reminder to rotate
-- More secure than classic PATs but requires more setup
-
-### Classic Personal Access Token (Simpler)
-
-Classic tokens are simpler but have broader permissions and no expiration requirement.
-
-**To create a classic PAT:**
-1. Go to Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Click "Generate new token (classic)"
-3. Set note (description) and expiration
-4. Select scopes:
-
-**Minimum permissions (scanning only):**
-| Scope | Purpose |
-|-------|---------|
-| `repo` | Full control of private repositories (read access to code) |
-| `read:org` | Read org membership and teams (enumerate repos) |
-
-**Additional permissions (for issue creation):**
-| Scope | Purpose |
-|-------|---------|
-| `repo` already includes issue creation | No additional scope needed |
-
-**Important notes for classic tokens:**
-- `repo` scope is broad (includes read/write for code, issues, PRs, etc.)
-- Consider using fine-grained tokens for better security
-- Set expiration and rotate regularly
-
-### Comparison: Fine-Grained vs Classic
+### Comparison
 
 | Feature | Fine-Grained | Classic |
 |---------|-------------|---------|
-| Security | Better (granular permissions) | Broader (all-or-nothing scopes) |
-| Setup Complexity | More complex | Simpler |
-| Multi-Org Support | Requires token per org | Single token for all orgs |
-| Expiration | Required (max 1 year) | Optional |
-| Recommended For | Production, security-conscious | Quick setup, testing |
+| Security | Better (granular) | Broader |
+| Setup | Complex | Simple |
+| Multi-Org | Token per org | Single token |
+| Expiration | Required (1 year max) | Optional |
 
-### Storing the Token
+### Store Token
 
-After creating either token type, store it as a repository secret:
+Repository Settings → Secrets and variables → Actions → Secrets
 
-1. Go to your repository Settings → Secrets and variables → Actions
-2. Click "New repository secret"
-3. Name: **`GH_PAT`**
-4. Value: Paste your token
-5. Click "Add secret"
+1. Click "New repository secret"
+2. Name: `GH_PAT`
+3. Value: Paste token
+4. Click "Add secret"
 
-### Troubleshooting Token Permissions
+### Troubleshooting
 
-**401 Unauthorized errors:**
-- Classic PAT: Ensure `repo` and `read:org` scopes are selected
-- Fine-grained PAT: Ensure "Contents: Read" and "Members: Read" are granted
-- Verify token hasn't expired
-- Check that the user has access to the target organizations
+**401 Unauthorized**:
+- Classic: Ensure `repo` + `read:org` scopes
+- Fine-grained: Ensure Contents (Read) + Members (Read)
+- Check token expiration
+- Verify org access
 
-**403 Forbidden errors:**
-- User may not have access to the organization
-- For private orgs, user must be a member
-- Fine-grained token may be scoped to wrong repositories/orgs
+**403 Forbidden**:
+- User must be org member
+- Fine-grained: Check repo/org scope
 
-**Issues not being created:**
-- Classic PAT: `repo` scope already includes issue creation (no change needed)
-- Fine-grained PAT: Ensure "Issues: Read and write" permission is granted
-- Verify `open_issues: true` is set in workflow input
-- Check that repository has issues enabled
+**Issues not created**:
+- Classic: `repo` includes issue creation
+- Fine-grained: Add Issues (Read/Write)
+- Verify `open_issues: true`
 
 ## Organization Configuration
 
-### Option A: Repository Variable (Recommended for defaults)
-```
-Repository Settings → Secrets and variables → Actions → Variables
-Name: TRUFFLEHOG_ORGS
-Value: org1,org2,org3
-```
+### Option A: Repository Variable (Recommended)
 
-### Option B: Manual Text Input
-Use the `org_names` input when clicking "Run workflow" (supports comma-separated list for single or multiple orgs)
+Settings → Secrets and variables → Actions → Variables
 
-**Priority Order**: `org_names` text input > `TRUFFLEHOG_ORGS` variable
+- Name: `TRUFFLEHOG_ORGS`
+- Value: `org1,org2,org3`
+
+### Option B: Manual Input
+
+Use `org_names` input when running workflow
+
+**Priority**: `org_names` input > `TRUFFLEHOG_ORGS` variable
 
 ## False Positive Filtering
 
 Edit `.github/trufflehog/false_positives.txt`:
-```regex
-# Postgres DSN placeholders
-postgres:\/\/username:password@hostname:\d+\/[^\/\s]+
 
-# Obvious placeholders
+```regex
+# Placeholders
+postgres:\/\/username:password@hostname:\d+\/[^\/\s]+
 \bexample(_|-)?(user|username|token|password|pass|key)\b
 \bchangeme\b
 \bplaceholder\b
 
-# Documentation paths
+# Documentation
 file=.*\/docs\/
 file=.*\/examples?\/
 file=.*README(\.md|\.rst)?$
 ```
 
-**How it works**: Patterns are matched against a composed string:
-```
-detector=<name> | verified=<bool> | repo=<owner/name> | file=<path> | redacted=<token>
-```
+**Pattern matching**: `detector=<name> | verified=<bool> | repo=<owner/name> | file=<path> | redacted=<token>`
 
 ---
 
-**See also:**
-- [Main README](README.md) - Overview and quick start
-- [Configuration Guide](CONFIGURATION.md) - Detailed configuration examples
-- [Remediation Guide](REMEDIATION.md) - How to remediate discovered secrets
-- [Troubleshooting](TROUBLESHOOTING.md) - Performance tuning and troubleshooting
+**See also**:
+- [README.md](README.md) - Overview
+- [CONFIGURATION.md](CONFIGURATION.md) - Examples
+- [REMEDIATION.md](REMEDIATION.md) - Secrets remediation
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Performance tuning
