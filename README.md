@@ -6,11 +6,13 @@ Production-ready GitHub Actions workflow for scanning multiple organizations wit
 
 ## Quick Start
 
-1. **Add secret**: `GH_PAT` with `repo` + `read:org` scopes
-2. **Set variable**: `TRUFFLEHOG_ORGS=org1,org2,org3`
+1. **Add secret**: Go to **Settings → Secrets and variables → Actions → Secrets**
+   - Add `GH_PAT` with `repo` + `read:org` scopes
+2. **Set variable**: Go to **Settings → Secrets and variables → Actions → Variables**
+   - Add `TRUFFLEHOG_ORGS=org1,org2,org3`
 3. **Run**: Actions → TruffleHog Org Scan → Run workflow
 
-Done! Runs **40-80% faster** with optimized defaults.
+Done! Runs **40-80% faster** with optimized defaults. See **Configuration** section below for details.
 
 ## Features
 
@@ -42,16 +44,57 @@ Done! Runs **40-80% faster** with optimized defaults.
 
 ## Configuration
 
-### Required Setup
+### Repository Setup
 
-**Secret** (required):
-- `GH_PAT`: GitHub token with `repo` + `read:org` scopes
+Configure these in your GitHub repository settings:
 
-**Variables** (optional):
-- `TRUFFLEHOG_ORGS`: Default orgs to scan (comma-separated)
-- `TRUFFLEHOG_ISSUES_ORGS`: Orgs for issue creation (empty = all)
+#### Secrets (Required)
+Go to **Settings → Secrets and variables → Actions → New repository secret**:
 
-See **[SETUP.md](SETUP.md)** for PAT creation and configuration details.
+- **`GH_PAT`** (required): GitHub Personal Access Token with `repo` + `read:org` scopes
+  - See **[SETUP.md](SETUP.md)** for PAT creation instructions
+
+#### Variables (Optional)
+Go to **Settings → Secrets and variables → Actions → Variables tab → New repository variable**:
+
+- **`TRUFFLEHOG_ORGS`**: Default organizations to scan (comma-separated)
+  - Example: `org1,org2,org3`
+  - Used when workflow is triggered without explicit org input
+  - Can be overridden via workflow dispatch input
+
+- **`TRUFFLEHOG_ISSUES_ORGS`**: Allow-list for issue creation (comma-separated)
+  - Example: `org1,org2` or leave empty for all orgs
+  - Only creates issues in specified orgs (when `open_issues: true`)
+  - Empty = issues created for all scanned orgs
+  - Can be overridden via workflow dispatch input
+
+#### Cron Schedule
+Default: **Every Sunday at 6 PM UTC**
+
+To modify, edit `.github/workflows/trufflehog-org-scan.yml`:
+```yaml
+schedule:
+  - cron: '0 18 * * 0'  # Sunday 6 PM UTC
+```
+
+Common schedules:
+- Daily at midnight: `'0 0 * * *'`
+- Every Monday 9 AM: `'0 9 * * 1'`
+- Twice weekly (Mon/Thu): `'0 0 * * 1,4'`
+
+#### False Positives
+Configure regex patterns to exclude known false positives:
+
+**File**: `.github/trufflehog/false_positives.txt`
+
+Add newline-delimited regex patterns (lines starting with `#` are comments):
+```
+# Example placeholder patterns
+\bexample(_|-)?(user|username|token|password)\b
+postgres://username:password@hostname:\d+/
+```
+
+Patterns match against: `detector=... | verified=... | repo=... | file=... | redacted=...`
 
 ### Workflow Inputs
 
@@ -66,15 +109,33 @@ See **[SETUP.md](SETUP.md)** for PAT creation and configuration details.
 
 See **[CONFIGURATION.md](CONFIGURATION.md)** for examples (daily, weekly, deep scans, large orgs).
 
-### Scheduled Runs
+### Default Workflow Values
 
-Default: **Every Sunday at 6 PM UTC**
+These defaults are configured in `.github/workflows/trufflehog-org-scan.yml`:
 
-```yaml
-on:
-  schedule:
-    - cron: '0 18 * * 0'
-```
+**Performance**:
+- `SCAN_PAR`: 8 concurrent scans per shard
+- `PER_REPO_TIMEOUT`: 5m per repository
+- `ADAPTIVE_TIMEOUT`: true (2m-15m based on repo size)
+
+**Sharding**:
+- `SHARD_CAP`: 10 max shards per organization
+- `REPOS_PER_SHARD`: 50 target repos per shard
+- `SIZE_BASED_SHARDING`: false (use modulo distribution)
+
+**Scanning**:
+- `SCAN_RESULTS`: verified,unknown (filter results)
+- `BRANCH_STRATEGY`: main-recent (default + recent branches)
+- `BRANCH_LOOKBACK_DAYS`: 30 days for recent branches
+- `SCAN_MODE`: recent (last 7 days of commits)
+- `SCAN_LOOKBACK_DAYS`: 7 days
+- `SKIP_STALE_BRANCHES`: true (skip branches >90 days old)
+
+**Other**:
+- `MAX_REPO_SIZE_KB`: 0 (no size limit)
+- `MAX_FINDING_LOG_LINES`: 300 lines per finding
+- `ALLOW_VER_OVERLAP`: true (allow verification overlap)
+- `EXCLUDE_GENERIC`: false (include generic detectors)
 
 ## Architecture
 
