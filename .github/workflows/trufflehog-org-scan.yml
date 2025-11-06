@@ -92,9 +92,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TRUFFLEHOG_VERSION: "3.90.6"
-  TRUFFLEHOG_IMAGE: "ghcr.io/trufflesecurity/trufflehog:3.90.6"
-  TRUFFLEHOG_CACHE_FILE: ".trufflehog_cache/trufflehog-3.90.6.tar"
+  TRUFFLEHOG_VERSION: ${{ vars.TRUFFLEHOG_VERSION || '3.90.6' }}
+  TRUFFLEHOG_IMAGE: ${{ vars.TRUFFLEHOG_IMAGE || 'ghcr.io/trufflesecurity/trufflehog:3.90.6' }}
+  TRUFFLEHOG_CACHE_FILE: ${{ vars.TRUFFLEHOG_CACHE_FILE || '.trufflehog_cache/trufflehog-3.90.6.tar' }}
 
 jobs:
   resolve-matrix:
@@ -135,10 +135,10 @@ jobs:
       total_shards: ${{ steps.build.outputs.total_shards }}
     env:
       GH_PAT: ${{ secrets.GH_PAT }}
-      API: https://api.github.com
-      SHARD_CAP: "10"
-      REPOS_PER_SHARD: "50"
-      SIZE_BASED_SHARDING: "false"
+      API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
+      SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
+      REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
+      SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
     steps:
       - id: build
         shell: bash
@@ -255,29 +255,29 @@ jobs:
       ORG: ${{ matrix.org }}
       GH_PAT: ${{ secrets.GH_PAT }}
       RUN_URL: ${{ github.run_url }}
-      API: https://api.github.com
-      SCAN_HISTORY: "true"
-      ALL_HEADS: "true"
-      PER_REPO_TIMEOUT: "5m"
-      SCAN_PAR: "8"
-      MAX_REPO_SIZE_KB: "0"
-      SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
-      ALLOW_VER_OVERLAP: "true"
-      EXCLUDE_GENERIC: "false"
-      MAX_FINDING_LOG_LINES: "300"
-      OPEN_ISSUES: ${{ inputs.open_issues }}
-      TRUFFLEHOG_DISABLE_UPDATER: "1"
+      API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
+      SCAN_HISTORY: ${{ vars.SCAN_HISTORY || 'true' }}
+      ALL_HEADS: ${{ vars.ALL_HEADS || 'true' }}
+      PER_REPO_TIMEOUT: ${{ vars.PER_REPO_TIMEOUT || '5m' }}
+      SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
+      MAX_REPO_SIZE_KB: ${{ vars.MAX_REPO_SIZE_KB || '0' }}
+      SCAN_RESULTS: ${{ inputs.scan_results || vars.DEFAULT_SCAN_RESULTS || 'verified,unknown' }}
+      ALLOW_VER_OVERLAP: ${{ vars.ALLOW_VER_OVERLAP || 'true' }}
+      EXCLUDE_GENERIC: ${{ vars.EXCLUDE_GENERIC || 'false' }}
+      MAX_FINDING_LOG_LINES: ${{ vars.MAX_FINDING_LOG_LINES || '300' }}
+      OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
+      TRUFFLEHOG_DISABLE_UPDATER: ${{ vars.TRUFFLEHOG_DISABLE_UPDATER || '1' }}
       SHARD_INDEX: ${{ matrix.index }}
       SHARD_INDEX1: ${{ matrix.index1 }}
       SHARD_TOTAL: ${{ matrix.shard_total }}
-      DEEP_SCAN: ${{ inputs.deep_scan || false }}
-      BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || 'main-recent' }}
-      BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
-      SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || 'recent' }}
-      SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
-      ADAPTIVE_TIMEOUT: "true"
+      DEEP_SCAN: ${{ inputs.deep_scan || vars.DEFAULT_DEEP_SCAN || false }}
+      BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || vars.DEFAULT_BRANCH_STRATEGY || 'main-recent' }}
+      BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || vars.DEFAULT_BRANCH_LOOKBACK_DAYS || '30' }}
+      SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || vars.DEFAULT_SCAN_MODE || 'recent' }}
+      SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || vars.DEFAULT_SCAN_LOOKBACK_DAYS || '7' }}
+      ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
       SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
-      SIZE_BASED_SHARDING: "false"
+      SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -752,20 +752,20 @@ jobs:
           TOTAL_REPOS: ${{ needs.plan.outputs.total_repos }}
           TOTAL_SHARDS: ${{ needs.plan.outputs.total_shards }}
           ORGS_JSON: ${{ needs.plan.outputs.orgs_json }}
-          OPEN_ISSUES: ${{ inputs.open_issues }}
-          SCAN_PAR: "8"
-          PER_REPO_TIMEOUT: "5m"
-          SHARD_CAP: "10"
-          REPOS_PER_SHARD: "50"
-          SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
-          DEEP_SCAN: ${{ inputs.deep_scan || false }}
-          BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || 'main-recent' }}
-          BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || '30' }}
-          SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || 'recent' }}
-          SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || '7' }}
-          ADAPTIVE_TIMEOUT: "true"
+          OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
+          SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
+          PER_REPO_TIMEOUT: ${{ vars.PER_REPO_TIMEOUT || '5m' }}
+          SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
+          REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
+          SCAN_RESULTS: ${{ inputs.scan_results || vars.DEFAULT_SCAN_RESULTS || 'verified,unknown' }}
+          DEEP_SCAN: ${{ inputs.deep_scan || vars.DEFAULT_DEEP_SCAN || false }}
+          BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || vars.DEFAULT_BRANCH_STRATEGY || 'main-recent' }}
+          BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || vars.DEFAULT_BRANCH_LOOKBACK_DAYS || '30' }}
+          SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || vars.DEFAULT_SCAN_MODE || 'recent' }}
+          SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || vars.DEFAULT_SCAN_LOOKBACK_DAYS || '7' }}
+          ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
           SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
-          SIZE_BASED_SHARDING: "false"
+          SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
         run: |
           set -Eeuo pipefail
 

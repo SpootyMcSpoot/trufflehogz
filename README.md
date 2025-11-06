@@ -57,6 +57,10 @@ Go to **Settings → Secrets and variables → Actions → New repository secret
 #### Variables (Optional)
 Go to **Settings → Secrets and variables → Actions → Variables tab → New repository variable**:
 
+All repository variables can be overridden by manual workflow inputs. The priority chain is:
+**Manual Input** > **Repository Variable** > **Hardcoded Default**
+
+##### Organization Configuration
 - **`TRUFFLEHOG_ORGS`**: Default organizations to scan (comma-separated)
   - Example: `org1,org2,org3`
   - Used when workflow is triggered without explicit org input
@@ -67,6 +71,41 @@ Go to **Settings → Secrets and variables → Actions → Variables tab → New
   - Only creates issues in specified orgs (when `open_issues: true`)
   - Empty = issues created for all scanned orgs
   - Can be overridden via workflow dispatch input
+
+##### Version & Infrastructure
+- **`TRUFFLEHOG_VERSION`**: TruffleHog version to use (default: `3.90.6`)
+- **`TRUFFLEHOG_IMAGE`**: Docker image to use (default: `ghcr.io/trufflesecurity/trufflehog:3.90.6`)
+- **`TRUFFLEHOG_CACHE_FILE`**: Cache file path (default: `.trufflehog_cache/trufflehog-3.90.6.tar`)
+- **`GITHUB_API`**: GitHub API endpoint (default: `https://api.github.com`, use for GitHub Enterprise)
+- **`TRUFFLEHOG_DISABLE_UPDATER`**: Disable auto-updater (default: `1`)
+
+##### Performance & Sharding
+- **`SHARD_CAP`**: Max shards per organization (default: `10`)
+- **`REPOS_PER_SHARD`**: Target repos per shard (default: `50`)
+- **`SCAN_PAR`**: Concurrent scans per shard (default: `8`)
+- **`SIZE_BASED_SHARDING`**: Enable size-based sharding (default: `false`)
+
+##### Timeout Management
+- **`PER_REPO_TIMEOUT`**: Timeout per repository (default: `5m`)
+- **`ADAPTIVE_TIMEOUT`**: Enable adaptive timeouts (default: `true`, provides 2m-15m based on repo size)
+
+##### Scanning Behavior
+- **`SCAN_HISTORY`**: Scan full git history (default: `true`)
+- **`ALL_HEADS`**: Scan all branches (default: `true`)
+- **`ALLOW_VER_OVERLAP`**: Allow verification overlap (default: `true`)
+- **`EXCLUDE_GENERIC`**: Exclude generic detectors (default: `false`)
+- **`MAX_FINDING_LOG_LINES`**: Max lines in finding logs (default: `300`)
+- **`MAX_REPO_SIZE_KB`**: Max repo size in KB, 0=unlimited (default: `0`)
+
+##### Default Workflow Input Values
+These set defaults when manual workflow inputs are not provided:
+- **`DEFAULT_SCAN_RESULTS`**: Results filter (default: `verified,unknown`)
+- **`DEFAULT_BRANCH_STRATEGY`**: Branch strategy (default: `main-recent`)
+- **`DEFAULT_SCAN_MODE`**: Scan mode (default: `recent`)
+- **`DEFAULT_BRANCH_LOOKBACK_DAYS`**: Branch lookback days (default: `30`)
+- **`DEFAULT_SCAN_LOOKBACK_DAYS`**: Scan lookback days (default: `7`)
+- **`DEFAULT_OPEN_ISSUES`**: Create issues by default (default: `false`)
+- **`DEFAULT_DEEP_SCAN`**: Enable deep scan by default (default: `false`)
 
 #### Cron Schedule
 Default: **Every Sunday at 6 PM UTC**
@@ -111,31 +150,39 @@ See **[CONFIGURATION.md](CONFIGURATION.md)** for examples (daily, weekly, deep s
 
 ### Default Workflow Values
 
-These defaults are configured in `.github/workflows/trufflehog-org-scan.yml`:
+These defaults can now be customized via **repository variables** (see Variables section above).
+The workflow uses this priority: **Manual Input** > **Repository Variable** > **Hardcoded Default**
 
 **Performance**:
-- `SCAN_PAR`: 8 concurrent scans per shard
-- `PER_REPO_TIMEOUT`: 5m per repository
-- `ADAPTIVE_TIMEOUT`: true (2m-15m based on repo size)
+- `SCAN_PAR`: 8 concurrent scans per shard (override with `vars.SCAN_PAR`)
+- `PER_REPO_TIMEOUT`: 5m per repository (override with `vars.PER_REPO_TIMEOUT`)
+- `ADAPTIVE_TIMEOUT`: true (2m-15m based on repo size, override with `vars.ADAPTIVE_TIMEOUT`)
 
 **Sharding**:
-- `SHARD_CAP`: 10 max shards per organization
-- `REPOS_PER_SHARD`: 50 target repos per shard
-- `SIZE_BASED_SHARDING`: false (use modulo distribution)
+- `SHARD_CAP`: 10 max shards per organization (override with `vars.SHARD_CAP`)
+- `REPOS_PER_SHARD`: 50 target repos per shard (override with `vars.REPOS_PER_SHARD`)
+- `SIZE_BASED_SHARDING`: false (use modulo distribution, override with `vars.SIZE_BASED_SHARDING`)
 
 **Scanning**:
-- `SCAN_RESULTS`: verified,unknown (filter results)
-- `BRANCH_STRATEGY`: main-recent (default + recent branches)
-- `BRANCH_LOOKBACK_DAYS`: 30 days for recent branches
-- `SCAN_MODE`: recent (last 7 days of commits)
-- `SCAN_LOOKBACK_DAYS`: 7 days
-- `SKIP_STALE_BRANCHES`: true (skip branches >90 days old)
+- `SCAN_RESULTS`: verified,unknown (filter results, override with `vars.DEFAULT_SCAN_RESULTS`)
+- `BRANCH_STRATEGY`: main-recent (default + recent branches, override with `vars.DEFAULT_BRANCH_STRATEGY`)
+- `BRANCH_LOOKBACK_DAYS`: 30 days for recent branches (override with `vars.DEFAULT_BRANCH_LOOKBACK_DAYS`)
+- `SCAN_MODE`: recent (last 7 days of commits, override with `vars.DEFAULT_SCAN_MODE`)
+- `SCAN_LOOKBACK_DAYS`: 7 days (override with `vars.DEFAULT_SCAN_LOOKBACK_DAYS`)
+- `SKIP_STALE_BRANCHES`: true (skip branches >90 days old, controlled by deep_scan)
 
 **Other**:
-- `MAX_REPO_SIZE_KB`: 0 (no size limit)
-- `MAX_FINDING_LOG_LINES`: 300 lines per finding
-- `ALLOW_VER_OVERLAP`: true (allow verification overlap)
-- `EXCLUDE_GENERIC`: false (include generic detectors)
+- `MAX_REPO_SIZE_KB`: 0 (no size limit, override with `vars.MAX_REPO_SIZE_KB`)
+- `MAX_FINDING_LOG_LINES`: 300 lines per finding (override with `vars.MAX_FINDING_LOG_LINES`)
+- `ALLOW_VER_OVERLAP`: true (allow verification overlap, override with `vars.ALLOW_VER_OVERLAP`)
+- `EXCLUDE_GENERIC`: false (include generic detectors, override with `vars.EXCLUDE_GENERIC`)
+- `SCAN_HISTORY`: true (scan full history, override with `vars.SCAN_HISTORY`)
+- `ALL_HEADS`: true (scan all branches, override with `vars.ALL_HEADS`)
+
+**Version & Infrastructure**:
+- `TRUFFLEHOG_VERSION`: 3.90.6 (override with `vars.TRUFFLEHOG_VERSION`)
+- `TRUFFLEHOG_IMAGE`: ghcr.io/trufflesecurity/trufflehog:3.90.6 (override with `vars.TRUFFLEHOG_IMAGE`)
+- `GITHUB_API`: https://api.github.com (override with `vars.GITHUB_API` for GitHub Enterprise)
 
 ## Architecture
 
@@ -231,7 +278,13 @@ See **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for detailed solutions.
 
 ## Changelog
 
-### v2.3 (Current)
+### v2.4 (Current)
+- All workflow defaults now configurable via repository variables
+- 27 new repository variables for complete customization
+- Priority chain: Manual Input > Repository Variable > Hardcoded Default
+- No workflow file edits needed to change defaults
+
+### v2.3
 - Fixed deduplication bug with None line numbers
 - Parameterized hardcoded values (rate limits, timeouts, retries)
 - Added comprehensive type hints
