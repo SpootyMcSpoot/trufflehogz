@@ -10,10 +10,10 @@ Key features
 - De-dupes repeated findings; only Verified==True are eligible for issues
 - DRY-RUN support
 - Sanitized console preview and Markdown summary (with commit/line links)
-- Diagnostics for NDJSON (per-repo and merged)
+- Diagnostics for JSON (per-repo and merged)
 - False-positive filtering via regex allow-list file (--exclude-patterns-file)
 - Detailed per-repo subsection in summary (detector + link to commit/line)
-- Optional errors NDJSON inclusion (HTTP errors etc.) into the summary
+- Optional errors JSON inclusion (HTTP errors etc.) into the summary
 
 Environment
   GH_APP_ID              GitHub App ID (preferred)
@@ -22,7 +22,7 @@ Environment
   GH_PAT                 GitHub Classic PAT with repo and read:org (fallback)
 
 CLI
-  --ndjson PATH          TruffleHog NDJSON path (default: findings.ndjson)
+  --json PATH            TruffleHog JSON path (default: findings.json)
   --run-url URL          Link back to the workflow run
   --max-workers N        Thread count (default: min(8, cpu_count()*2))
   --labels "a,b,c"       Extra labels to union with auto labels
@@ -32,13 +32,13 @@ CLI
   --print-sanitized N    Print up to N sanitized VERIFIED finding lines to stdout
   --write-summary        Write a Markdown summary to GITHUB_STEP_SUMMARY
   --org STR              Optional org name for display in logs
-  --errors-ndjson PATH   Optional NDJSON of errors (e.g., HTTP 401) to include in summary
+  --errors-json PATH     Optional JSON of errors (e.g., HTTP 401) to include in summary
 
 Diagnostics
-  --diag-dir PATH        Directory of per-repo .ndjson to inspect
+  --diag-dir PATH        Directory of per-repo .json to inspect
   --diag-max-files N     Max number of files to print diagnostics for (default: 25)
   --diag-max-lines N     Max sanitized lines to print per file (default: 3)
-  --validate             Print stats about --ndjson (total lines, bad lines, unique repos/detectors) and exit (read-only)
+  --validate             Print stats about --json (total lines, bad lines, unique repos/detectors) and exit (read-only)
 
 False-positive filtering
   --exclude-patterns-file PATH
@@ -664,8 +664,8 @@ def make_finding_key(repo: str, detector: str, path: str,
     canonical_commit = str(commit) if commit else ""
     return (sanitize_repo(repo or ""), str(detector or ""), str(path or ""), canonical_line, canonical_commit)
 
-def iter_ndjson(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Generator[Dict[str, Any], None, None]:
-    """Generator that yields parsed NDJSON objects, optionally filtered."""
+def iter_json(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Generator[Dict[str, Any], None, None]:
+    """Generator that yields parsed JSON objects, optionally filtered."""
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return
     exclude_regexes = exclude_regexes or []
@@ -684,12 +684,12 @@ def iter_ndjson(path: str, verified_only: bool = False, exclude_regexes: Optiona
             except json.JSONDecodeError:
                 continue
 
-def load_findings(ndjson_path: str, exclude_regexes: List[re.Pattern]) -> Dict[str, List[Dict[str, Any]]]:
-    """Read NDJSON and return findings grouped by repo, filtered to Verified==True and not excluded, de-duped."""
+def load_findings(json_path: str, exclude_regexes: List[re.Pattern]) -> Dict[str, List[Dict[str, Any]]]:
+    """Read JSON and return findings grouped by repo, filtered to Verified==True and not excluded, de-duped."""
     findings_by_repo: Dict[str, List[Dict[str, Any]]] = {}
     seen = set()
 
-    for obj in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
+    for obj in iter_json(json_path, verified_only=True, exclude_regexes=exclude_regexes):
         repo = sanitize_repo(find_repo(obj) or "")
         if not repo:
             continue
@@ -725,13 +725,13 @@ def _print_one_sanitized(o: Dict[str, Any], org: str) -> None:
     else:
         print(f"[{org}] {repo} | {det} | {shortpath(fpath)}:{ln_str} | verified={ver}")
 
-def print_sanitized_preview(ndjson_path: str, org: str, max_lines: int,
+def print_sanitized_preview(json_path: str, org: str, max_lines: int,
                             exclude_regexes: List[re.Pattern]) -> None:
     """Print up to N sanitized VERIFIED findings to stdout for quick inspection."""
     if max_lines <= 0:
         return
     shown = 0
-    for obj in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
+    for obj in iter_json(json_path, verified_only=True, exclude_regexes=exclude_regexes):
         if shown >= max_lines:
             break
         _print_one_sanitized(obj, org)
@@ -739,10 +739,10 @@ def print_sanitized_preview(ndjson_path: str, org: str, max_lines: int,
     if shown > 0:
         logging.info("[%s] preview printed %d line(s)", org, shown)
 
-def ndjson_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tuple[int, int, int, int]:
+def json_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tuple[int, int, int, int]:
     total, bad, repos, dets = 0, 0, set(), set()
     if not os.path.exists(path):
-        logging.info("[%s] NDJSON not found: %s", org, path)
+        logging.info("[%s] JSON not found: %s", org, path)
         return (0, 0, 0, 0)
 
     with open(path, "r", encoding="utf-8") as f:
@@ -762,7 +762,7 @@ def ndjson_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tupl
                 bad += 1
     return (total, bad, len(repos), len(dets))
 
-def load_errors_ndjson(path: Optional[str]) -> List[Dict[str, Any]]:
+def load_errors_json(path: Optional[str]) -> List[Dict[str, Any]]:
     errs: List[Dict[str, Any]] = []
     if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
         return errs
@@ -779,7 +779,7 @@ def load_errors_ndjson(path: Optional[str]) -> List[Dict[str, Any]]:
                 continue
     return errs
 
-def write_markdown_summary(ndjson_path: str,
+def write_markdown_summary(json_path: str,
                            org: str,
                            exclude_regexes: List[re.Pattern],
                            include_detailed: bool = False,
@@ -798,7 +798,7 @@ def write_markdown_summary(ndjson_path: str,
     per_repo_rows: Dict[str, List[Tuple[str, str, Optional[int], str]]] = {}
     total = 0
 
-    for o in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
+    for o in iter_json(json_path, verified_only=True, exclude_regexes=exclude_regexes):
         det = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
         repo = sanitize_repo(find_repo(o) or "")
         if not repo:
@@ -862,7 +862,7 @@ def write_markdown_summary(ndjson_path: str,
             if remaining > 0:
                 content_lines.append(f"_... {remaining} more finding(s) omitted to keep the summary concise._\n\n")
 
-    errs = load_errors_ndjson(errors_path)
+    errs = load_errors_json(errors_path)
     if errs:
         content_lines.append("### API/Scan errors observed\n")
         content_lines.append("| Repo | Stage | Status | Message |\n|---|---|---:|---|\n")
@@ -1048,7 +1048,7 @@ def process_repo(repo: str,
 
 def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: int,
                           exclude_regexes: Optional[List[re.Pattern]] = None) -> None:
-    """Print quick diagnostics for per-repo NDJSON files."""
+    """Print quick diagnostics for per-repo JSON files."""
     if not diag_dir or not os.path.isdir(diag_dir):
         logging.info("[%s] diag dir not found: %s", org, diag_dir)
         return
@@ -1056,13 +1056,13 @@ def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: in
     printed = 0
     for root, _dirs, files in os.walk(diag_dir):
         for fn in sorted(files):
-            if not fn.endswith(".ndjson") or printed >= max_files:
+            if not fn.endswith(".json") or printed >= max_files:
                 continue
             path = os.path.join(root, fn)
             print(f"[{org}] diag file: {path} bytes={os.path.getsize(path)}")
 
             c = 0
-            for obj in iter_ndjson(path):
+            for obj in iter_json(path):
                 if c >= max_lines:
                     break
                 _print_one_sanitized(obj, org)
@@ -1073,7 +1073,7 @@ def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: in
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--ndjson", default="findings.ndjson")
+    p.add_argument("--json", default="findings.json")
     p.add_argument("--run-url", default="")
     p.add_argument("--scanner-repo", default="", help="GitHub repository with remediation docs (org/repo)")
     p.add_argument("--max-workers", type=int, default=0)
@@ -1099,8 +1099,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--summary-detailed-per-repo", type=int, default=10)
     p.add_argument("--summary-detailed-max", type=int, default=300)
 
-    # Errors NDJSON (optional)
-    p.add_argument("--errors-ndjson", default=None)
+    # Errors JSON (optional)
+    p.add_argument("--errors-json", default=None)
     return p.parse_args()
 
 def main() -> int:
@@ -1117,39 +1117,39 @@ def main() -> int:
         except Exception as e:
             logging.warning("diagnose_findings_dir failed: %s", e)
 
-    # Optional preview for merged NDJSON (filtered by exclude patterns + Verified)
-    if os.path.exists(args.ndjson):
+    # Optional preview for merged JSON (filtered by exclude patterns + Verified)
+    if os.path.exists(args.json):
         try:
-            print_sanitized_preview(args.ndjson, args.org, args.print_sanitized, exclude_regexes)
+            print_sanitized_preview(args.json, args.org, args.print_sanitized, exclude_regexes)
         except Exception as e:
             logging.warning("Sanitized preview failed: %s", e)
 
     # Read-only validation stats
     if args.validate:
         try:
-            total, bad, repo_cnt, det_cnt = ndjson_stats(args.ndjson, exclude_regexes, args.org)
+            total, bad, repo_cnt, det_cnt = json_stats(args.json, exclude_regexes, args.org)
             logging.info("[%s] stats: lines=%d bad=%d unique_repos=%d unique_detectors=%d",
                          args.org, total, bad, repo_cnt, det_cnt)
         except Exception as e:
             logging.warning("validate stats failed: %s", e)
         return 0
 
-    # If this invocation is clearly diagnostics-only (no summary requested and no NDJSON), exit quietly.
-    if args.diag_dir and not args.write_summary and not os.path.exists(args.ndjson):
-        logging.info("[%s] diagnostics-only run; no merged NDJSON to process", args.org)
+    # If this invocation is clearly diagnostics-only (no summary requested and no JSON), exit quietly.
+    if args.diag_dir and not args.write_summary and not os.path.exists(args.json):
+        logging.info("[%s] diagnostics-only run; no merged JSON to process", args.org)
         return 0
 
     # Optional summary (still read-only)
-    if os.path.exists(args.ndjson) and args.write_summary:
+    if os.path.exists(args.json) and args.write_summary:
         try:
             write_markdown_summary(
-                args.ndjson,
+                args.json,
                 args.org,
                 exclude_regexes,
                 include_detailed=args.summary_detailed,
                 detailed_per_repo=max(1, args.summary_detailed_per_repo),
                 detailed_max_total=max(1, args.summary_detailed_max),
-                errors_path=args.errors_ndjson
+                errors_path=args.errors_json
             )
         except Exception as e:
             logging.warning("Summary generation failed: %s", e)
@@ -1158,9 +1158,9 @@ def main() -> int:
         token = get_auth_token()
     except ValueError as e:
         logging.info("Skipping issue creation: %s", e)
-        return 0 if os.path.exists(args.ndjson) else 0
+        return 0 if os.path.exists(args.json) else 0
 
-    findings = load_findings(args.ndjson, exclude_regexes)
+    findings = load_findings(args.json, exclude_regexes)
     if not findings:
         logging.info("No verified findings detected after filtering; no issues created")
         return 0

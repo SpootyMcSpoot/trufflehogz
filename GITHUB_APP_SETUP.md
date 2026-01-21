@@ -234,7 +234,7 @@ export GH_APP_ID="123456"
 export GH_APP_INSTALLATION_ID="789012"
 export GH_APP_PRIVATE_KEY="$(cat path/to/private-key.pem)"
 
-python3 trufflehog_scanner.py --ndjson findings.ndjson --dry-run
+python3 trufflehog_scanner.py --json findings.json --dry-run
 ```
 
 ### Verify Authentication

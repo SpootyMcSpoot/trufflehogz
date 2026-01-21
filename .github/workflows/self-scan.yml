@@ -48,10 +48,10 @@ jobs:
         id: scan
         run: |
           # Scan the repository and output findings as JSON
-          trufflehog git file://. --json --no-verification > findings.ndjson 2>&1 || true
+          trufflehog git file://. --json --no-verification > findings.json 2>&1 || true
 
           # Count findings
-          FINDING_COUNT=$(wc -l < findings.ndjson | tr -d ' ')
+          FINDING_COUNT=$(wc -l < findings.json | tr -d ' ')
           echo "finding_count=$FINDING_COUNT" >> $GITHUB_OUTPUT
           echo "Found $FINDING_COUNT potential secrets"
 
@@ -74,7 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trufflehog-findings
-          path: findings.ndjson
+          path: findings.json
           retention-days: 7
 
   public-org-scan:
@@ -117,7 +117,7 @@ jobs:
             echo "----------------------------------------"
 
             # Scan org's public repos (no verification to avoid API calls)
-            OUTPUT_FILE="public-findings/${org}.ndjson"
+            OUTPUT_FILE="public-findings/${org}.json"
             trufflehog github --org="$org" --json --no-verification > "$OUTPUT_FILE" 2>&1 || true
 
             # Count findings for this org
@@ -135,7 +135,7 @@ jobs:
           echo "Total findings: $TOTAL_FINDINGS"
 
           # Combine all findings
-          cat public-findings/*.ndjson > public-findings/all-findings.ndjson 2>/dev/null || touch public-findings/all-findings.ndjson
+          cat public-findings/*.json > public-findings/all-findings.json 2>/dev/null || touch public-findings/all-findings.json
 
           echo "orgs_scanned=$ORGS_SCANNED" >> $GITHUB_OUTPUT
           echo "total_findings=$TOTAL_FINDINGS" >> $GITHUB_OUTPUT
@@ -207,7 +207,7 @@ jobs:
       - name: Test scanner validation mode
         run: |
           python trufflehog_scanner.py \
-            --ndjson findings.ndjson \
+            --json findings.json \
             --validate \
             --org test-org \
             --log-level INFO
@@ -217,7 +217,7 @@ jobs:
           GH_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python trufflehog_scanner.py \
-            --ndjson findings.ndjson \
+            --json findings.json \
             --dry-run \
             --org test-org \
             --title-prefix "[Test]" \

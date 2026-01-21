@@ -45,7 +45,7 @@ Performance optimization and issue resolution guide.
 
 **Key Metrics**:
 - Total scan time (workflow summary)
-- Timeout count (errors NDJSON)
+- Timeout count (errors JSON)
 - Shard completion time (check imbalance)
 - API rate limit hits (workflow logs)
 
@@ -85,7 +85,7 @@ Performance optimization and issue resolution guide.
 - Increase `scan_lookback_days` to 14-30
 - Use `deep_scan: true`
 
-**Empty NDJSON files**
+**Empty JSON files**
 - Check TruffleHog version compatibility
 - Verify repos aren't all archived/empty
 - Review `scan_results` setting
