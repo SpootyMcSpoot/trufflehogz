@@ -1,0 +1,829 @@
+name: "TruffleHog – Org Scan (Non-Public Repos)"
+
+on:
+  schedule:
+    # Run every Sunday at 6 PM UTC (Sunday evening)
+    - cron: '0 18 * * 0'
+  push:
+    branches:
+      - '**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      org_names:
+        description: "Comma-separated list of organizations to scan"
+        required: false
+        default: ""
+        type: string
+      open_issues:
+        description: "Create issues for verified findings"
+        required: false
+        default: false
+        type: boolean
+      scan_results:
+        description: "Results filter"
+        required: false
+        default: "verified,unknown"
+        type: choice
+        options:
+          - "verified"
+          - "verified,unknown"
+          - "all"
+      issues_creation_orgs:
+        description: "Comma-separated list of orgs where issues should be created (empty = all orgs)"
+        required: false
+        default: ""
+        type: string
+      branch_strategy:
+        description: "Branch scanning strategy"
+        required: false
+        default: "main-recent"
+        type: choice
+        options:
+          - "all"
+          - "main-only"
+          - "main-recent"
+          - "protected"
+      scan_mode:
+        description: "Scan mode"
+        required: false
+        default: "recent"
+        type: choice
+        options:
+          - "full"
+          - "recent"
+          - "incremental"
+      deep_scan:
+        description: "Deep scan mode (scans all branches and all commits, overrides branch/scan strategies)"
+        required: false
+        default: false
+        type: boolean
+      branch_lookback_days:
+        description: "Branch lookback days (for main-recent strategy)"
+        required: false
+        default: "30"
+        type: choice
+        options:
+          - "7"
+          - "14"
+          - "30"
+          - "60"
+          - "90"
+      scan_lookback_days:
+        description: "Scan lookback days (for recent scan mode)"
+        required: false
+        default: "7"
+        type: choice
+        options:
+          - "1"
+          - "3"
+          - "7"
+          - "14"
+          - "30"
+
+permissions:
+  contents: read
+  packages: read
+  issues: write   # used only if open_issues=true
+
+concurrency:
+  group: trufflehog-org-scan
+  cancel-in-progress: false
+
+env:
+  TRUFFLEHOG_VERSION: ${{ vars.TRUFFLEHOG_VERSION || '3.90.6' }}
+  TRUFFLEHOG_IMAGE: ${{ vars.TRUFFLEHOG_IMAGE || 'ghcr.io/trufflesecurity/trufflehog:3.90.6' }}
+  TRUFFLEHOG_CACHE_FILE: ${{ vars.TRUFFLEHOG_CACHE_FILE || '.trufflehog_cache/trufflehog-3.90.6.tar' }}
+
+jobs:
+  resolve-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      orgs_json: ${{ steps.set-matrix.outputs.orgs_json }}
+    env:
+      INPUT_ORGS: ${{ inputs.org_names }}
+      VAR_ORGS: ${{ vars.TRUFFLEHOG_ORGS }}
+      DEFAULT_ORGS: ""
+    steps:
+      - id: set-matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ORG_LIST="${INPUT_ORGS:-}"
+          if [ -z "${ORG_LIST}" ]; then ORG_LIST="${VAR_ORGS:-}"; fi
+          if [ -z "${ORG_LIST}" ]; then ORG_LIST="${DEFAULT_ORGS}"; fi
+          IFS=',' read -r -a ORGS_ARR <<< "${ORG_LIST}"
+          org_json='{"org":['
+          first=1
+          for org in "${ORGS_ARR[@]}"; do
+            org="$(echo "$org" | xargs)"
+            [ -z "$org" ] && continue
+            if [ $first -eq 1 ]; then first=0; org_json+="\"$org\""; else org_json+=",\"$org\""; fi
+          done
+          org_json+=']}'
+          echo "orgs_json=$org_json" >> "$GITHUB_OUTPUT"
+          echo "Orgs matrix: $org_json"
+
+  plan:
+    runs-on: ubuntu-latest
+    needs: [resolve-matrix]
+    outputs:
+      tasks_json: ${{ steps.build.outputs.tasks_json }}
+      orgs_json:  ${{ needs.resolve-matrix.outputs.orgs_json }}
+      total_repos: ${{ steps.build.outputs.total_repos }}
+      total_shards: ${{ steps.build.outputs.total_shards }}
+    env:
+      # GitHub App credentials (preferred)
+      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+      # Fallback to PAT
+      GH_PAT: ${{ secrets.GH_PAT }}
+      API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
+      SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
+      REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
+      SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
+    steps:
+      - id: build
+        shell: bash
+        env:
+          ORGS_JSON: ${{ needs.resolve-matrix.outputs.orgs_json }}
+        run: |
+          set -Eeuo pipefail
+          mapfile -t ORGS < <(jq -r '.org[]' <<< "${ORGS_JSON}")
+          TASKS='[]'
+          TOTAL_REPOS_ALL=0
+          TOTAL_SHARDS_ALL=0
+
+          # Helper function to add warning task
+          add_warning_task() {
+            local org="$1" stage="$2" status="$3" msg="$4"
+            TASKS="$(jq -c --arg o "$org" --arg s "$stage" --argjson st "$status" --arg m "$msg" \
+              '. + [{org:$o, index:0, index1:1, shard_total:1, will_warn:true, warn_stage:$s, warn_status:$st, warn_message:$m}]' <<< "$TASKS")"
+          }
+
+          for ORG in "${ORGS[@]}"; do
+            echo "::group::Plan for ${ORG}"
+
+            # ---- Membership probe ----
+            memb_body="$(mktemp)"; memb_code=0
+            memb_code="$(curl -sS -w '%{http_code}' -o "${memb_body}" \
+              -H "Authorization: Bearer ${GH_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              "${API}/user/memberships/orgs/${ORG}")" || memb_code=000
+
+            if [ "${memb_code}" = "401" ]; then
+              warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
+              echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
+              add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
+              echo "::endgroup::"; continue
+            fi
+
+            if [ "${memb_code}" = "403" ] || [ "${memb_code}" = "404" ] || [ "${memb_code}" = "000" ]; then
+              warn_msg="GET /user/memberships/orgs/${ORG} => ${memb_code}. Ensure PAT is member (state=active) and has 'read:org' + 'repo'."
+              echo "::warning title=No org membership or insufficient scopes::${warn_msg}"
+              add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
+              echo "::endgroup::"; continue
+            fi
+
+            state="$(jq -r '.state // ""' < "${memb_body}")"; rm -f "${memb_body}"
+            if [ "${state}" != "active" ]; then
+              warn_msg="Org membership for ${ORG} is not active (state='${state}')."
+              echo "::warning title=Org membership not active::${warn_msg}"
+              add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
+              echo "::endgroup::"; continue
+            fi
+
+            # ---- Count visible repos ----
+            total=0; page=1
+            while :; do
+              body="$(mktemp)"; code=0
+              code="$(curl -sS -w '%{http_code}' -o "${body}" \
+                -H "Authorization: Bearer ${GH_PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
+              if [ "${code}" = "401" ] || [ "${code}" = "403" ]; then
+                warn_msg="GET /orgs/${ORG}/repos => ${code}. Check 'repo' scope and org access."
+                echo "::warning title=Org repo listing unauthorized::${warn_msg}"
+                add_warning_task "$ORG" "list_repos" 403 "$warn_msg"
+                rm -f "${body}"; break
+              fi
+              if [ "${code}" != "200" ]; then
+                echo "::warning title=Repo list error::GET /orgs/${ORG}/repos => ${code}. Treating as zero."
+                rm -f "${body}"
+                break
+              fi
+              count="$(jq 'length' < "${body}")"
+              [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
+              inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select((.visibility != "public") or (.private==true)) ] | length' < "${body}")"
+              total=$(( total + inc )); rm -f "${body}"
+              [ "${count}" -lt 100 ] && break
+              page=$((page+1))
+            done
+
+            echo "Visible eligible repos for ${ORG}: ${total}"
+            TOTAL_REPOS_ALL=$((TOTAL_REPOS_ALL + total))
+            # Improved sharding: use configurable repos per shard
+            if [ "${total}" -le "${REPOS_PER_SHARD}" ]; then
+              shards=1
+            else
+              shards=$(( (total + REPOS_PER_SHARD - 1) / REPOS_PER_SHARD ))
+            fi
+            [ "${shards}" -gt "${SHARD_CAP}" ] && shards="${SHARD_CAP}"
+            echo "Shard count for ${ORG}: ${shards} (target: ${REPOS_PER_SHARD} repos/shard, cap: ${SHARD_CAP})"
+            TOTAL_SHARDS_ALL=$((TOTAL_SHARDS_ALL + shards))
+
+            for ((i=0;i<shards;i++)); do
+              idx1=$((i+1))
+              TASKS="$(jq -c --arg o "$ORG" --argjson i "$i" --argjson i1 "$idx1" --argjson t "$shards" \
+                '. + [ {org:$o, index:$i, index1:$i1, shard_total:$t} ]' <<< "$TASKS")"
+            done
+            echo "::endgroup::"
+          done
+
+          echo "tasks_json=${TASKS}" >> "$GITHUB_OUTPUT"
+          echo "total_repos=${TOTAL_REPOS_ALL}" >> "$GITHUB_OUTPUT"
+          echo "total_shards=${TOTAL_SHARDS_ALL}" >> "$GITHUB_OUTPUT"
+          echo "Tasks matrix: ${TASKS}"
+          echo "::notice title=Scan Plan::Total repos: ${TOTAL_REPOS_ALL}, Total shards: ${TOTAL_SHARDS_ALL}"
+
+  scan-org:
+    runs-on: ubuntu-latest
+    needs: [plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.tasks_json) }}
+    name: Scan ${{ matrix.org }} [shard ${{ matrix.index1 }}/${{ matrix.shard_total }}]
+    env:
+      ORG: ${{ matrix.org }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+      RUN_URL: ${{ github.run_url }}
+      API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
+      SCAN_HISTORY: ${{ vars.SCAN_HISTORY || 'true' }}
+      ALL_HEADS: ${{ vars.ALL_HEADS || 'true' }}
+      PER_REPO_TIMEOUT: ${{ vars.PER_REPO_TIMEOUT || '5m' }}
+      SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
+      MAX_REPO_SIZE_KB: ${{ vars.MAX_REPO_SIZE_KB || '0' }}
+      SCAN_RESULTS: ${{ inputs.scan_results || vars.DEFAULT_SCAN_RESULTS || 'verified,unknown' }}
+      ALLOW_VER_OVERLAP: ${{ vars.ALLOW_VER_OVERLAP || 'true' }}
+      EXCLUDE_GENERIC: ${{ vars.EXCLUDE_GENERIC || 'false' }}
+      MAX_FINDING_LOG_LINES: ${{ vars.MAX_FINDING_LOG_LINES || '300' }}
+      OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
+      TRUFFLEHOG_DISABLE_UPDATER: ${{ vars.TRUFFLEHOG_DISABLE_UPDATER || '1' }}
+      SHARD_INDEX: ${{ matrix.index }}
+      SHARD_INDEX1: ${{ matrix.index1 }}
+      SHARD_TOTAL: ${{ matrix.shard_total }}
+      DEEP_SCAN: ${{ inputs.deep_scan || vars.DEFAULT_DEEP_SCAN || false }}
+      BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || vars.DEFAULT_BRANCH_STRATEGY || 'main-recent' }}
+      BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || vars.DEFAULT_BRANCH_LOOKBACK_DAYS || '30' }}
+      SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || vars.DEFAULT_SCAN_MODE || 'recent' }}
+      SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || vars.DEFAULT_SCAN_LOOKBACK_DAYS || '7' }}
+      ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
+      SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
+      SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: If plan warned for this org, record warning and skip scan
+        if: ${{ matrix.will_warn == true }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "diag-${ORG}"
+          : > "findings-${ORG}.ndjson"
+          : > "errors-${ORG}.ndjson"
+          : > "diag-${ORG}/SCAN_SUMMARY.txt"
+          # Emit a structured warning line so it shows in the final summary
+          printf '{"org":"%s","repo":"(org-level)","stage":"%s","status":%s,"message":%s}\n' \
+            "${ORG}" \
+            "${{ matrix.warn_stage || 'org_membership' }}" \
+            "${{ matrix.warn_status || 403 }}" \
+            "$(jq -Rsa . <<< "${{ matrix.warn_message || format('Access warning for {0}', matrix.org) }}")" \
+            >> "errors-${ORG}.ndjson"
+          echo "WARN: ${{ matrix.warn_message }}"
+
+      - name: Prime/restore TruffleHog image cache
+        if: ${{ matrix.will_warn != true }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TRUFFLEHOG_CACHE_FILE }}
+          key: trufflehog-image-${{ env.TRUFFLEHOG_VERSION }}
+
+      - name: Ensure TruffleHog image present (pinned)
+        if: ${{ matrix.will_warn != true }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ -f "${TRUFFLEHOG_CACHE_FILE}" ]; then docker load -i "${TRUFFLEHOG_CACHE_FILE}" || true; fi
+          if ! docker image inspect "${TRUFFLEHOG_IMAGE}" > /dev/null 2>&1; then
+            docker pull "${TRUFFLEHOG_IMAGE}"
+            mkdir -p "$(dirname "${TRUFFLEHOG_CACHE_FILE}")"
+            docker save "${TRUFFLEHOG_IMAGE}" -o "${TRUFFLEHOG_CACHE_FILE}"
+          fi
+          docker image inspect "${TRUFFLEHOG_IMAGE}" >/dev/null
+
+      - name: Enumerate repos (non-public, !archived, !fork) + DIAG:PLAN
+        if: ${{ matrix.will_warn != true }}
+        shell: bash
+        env:
+          GH_AUTH: "Bearer ${{ env.GH_PAT }}"
+        run: |
+          set -Eeuo pipefail
+          : > "repos-${ORG}.txt"
+          page=1
+          while :; do
+            body="$(mktemp)"; code=0
+            code="$(curl -sS -w '%{http_code}' -o "${body}" \
+              -H "Authorization: ${GH_AUTH}" \
+              -H "Accept: application/vnd.github+json" \
+              "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
+            if [ "${code}" != "200" ]; then
+              mkdir -p "tmp-errors-${ORG}"
+              echo "{\"org\":\"${ORG}\",\"repo\":\"(org-level)\",\"stage\":\"list_repos\",\"status\":${code},\"message\":\"GET /orgs/${ORG}/repos page=${page}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
+              rm -f "${body}"
+              break
+            fi
+            count="$(jq 'length' < "${body}")"
+            [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
+            jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
+              .[] |
+              select(.archived==false and .fork==false) |
+              select((.visibility != "public") or (.private==true)) |
+              select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
+              .full_name
+            ' "${body}" >> "repos-${ORG}.txt"
+            rm -f "${body}"
+            page=$((page+1))
+          done
+          # Create repos-to-size mapping file for adaptive timeout
+          : > "repos-${ORG}-sizes.txt"
+          page=1
+          while :; do
+            body="$(mktemp)"; code=0
+            code="$(curl -sS -w '%{http_code}' -o "${body}" \
+              -H "Authorization: Bearer ${GH_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
+            if [ "${code}" != "200" ]; then rm -f "${body}"; break; fi
+            count="$(jq 'length' < "${body}")"
+            [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
+            jq -r '.[] | "\(.full_name):\(.size)"' "${body}" >> "repos-${ORG}-sizes.txt"
+            rm -f "${body}"
+            [ "${count}" -lt 100 ] && break
+            page=$((page+1))
+          done
+
+          LC_ALL=C sort -u "repos-${ORG}.txt" -o "repos-${ORG}.txt"
+          total=$(wc -l < "repos-${ORG}.txt" || echo 0)
+          sha=$(sha256sum "repos-${ORG}.txt" | awk '{print $1}')
+          {
+            echo "=== DIAG:PLAN ${ORG} ==="
+            echo "ORG=${ORG}"
+            echo "TOTAL_PLAN_REPOS=${total}"
+            echo "PLAN_SHA256=${sha}"
+            echo "--- HEAD(10) ---"; head -n 10 "repos-${ORG}.txt" || true
+            echo "--- TAIL(10) ---"; tail -n 10 "repos-${ORG}.txt" || true
+            echo "=== END DIAG:PLAN ${ORG} ==="
+          } | tee "PLAN_DIAG-${ORG}.txt"
+
+          : > "repos-${ORG}-shard-${SHARD_INDEX1}-of-${SHARD_TOTAL}.txt"
+          if [ -s "repos-${ORG}.txt" ]; then
+            if [ "${SIZE_BASED_SHARDING}" = "true" ] && [ -s "repos-${ORG}-sizes.txt" ]; then
+              # Size-based distribution: sort by size descending, then round-robin
+              # This ensures each shard gets a mix of large and small repos
+              join -t: "repos-${ORG}.txt" "repos-${ORG}-sizes.txt" 2>/dev/null | \
+                sort -t: -k2 -nr | \
+                nl -ba -v0 -w1 -s$'\t' | \
+                awk -F'\t' -v m="${SHARD_TOTAL}" -v r="${SHARD_INDEX}" '($1 % m) == r {
+                  split($2, parts, ":");
+                  print parts[1];
+                }' > "repos-${ORG}-shard-${SHARD_INDEX1}-of-${SHARD_TOTAL}.txt"
+              echo "[${ORG}] Size-based sharding enabled for shard ${SHARD_INDEX1}/${SHARD_TOTAL}"
+            else
+              # Standard modulo-based distribution
+              nl -ba -v0 -w1 -s$'\t' "repos-${ORG}.txt" | awk -F'\t' -v m="${SHARD_TOTAL}" -v r="${SHARD_INDEX}" '($1 % m) == r {print $2}' \
+                > "repos-${ORG}-shard-${SHARD_INDEX1}-of-${SHARD_TOTAL}.txt"
+            fi
+          fi
+          if [ ! -s "repos-${ORG}-shard-${SHARD_INDEX1}-of-${SHARD_TOTAL}.txt" ]; then
+            echo "No repos for this shard (${ORG} shard ${SHARD_INDEX1}/${SHARD_TOTAL}); skipping scan steps."
+          fi
+
+      - name: Scan repos with TruffleHog (git, all branches/history)
+        if: ${{ matrix.will_warn != true && hashFiles(format('repos-{0}-shard-{1}-of-{2}.txt', env.ORG, env.SHARD_INDEX1, env.SHARD_TOTAL)) != '' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export GIT_TERMINAL_PROMPT=0
+          rm -rf "tmp-findings-${ORG}" "tmp-logs-${ORG}" "tmp-errors-${ORG}" "diag-${ORG}"
+          mkdir -p "tmp-findings-${ORG}" "tmp-logs-${ORG}" "tmp-errors-${ORG}" "diag-${ORG}/stderr-samples"
+          EXTRA_FLAGS=( --results="${SCAN_RESULTS}" --json --force-skip-binaries --force-skip-archives )
+          [ "${ALLOW_VER_OVERLAP}" = "true" ] && EXTRA_FLAGS+=( --allow-verification-overlap )
+          [ "${EXCLUDE_GENERIC}" = "true" ] && EXTRA_FLAGS+=( --exclude-detectors=generic )
+
+          th_git() { local repo_url="$1"; shift; timeout "${PER_REPO_TIMEOUT}" docker run --rm \
+              -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
+              -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${repo_url}" "$@"; }
+
+          list_branches_api() {
+            local full="$1"; local page=1; local any=0; local tmp; local meta
+            : > "branches-${full//\//__}.txt"
+
+            # Get repo metadata for default branch
+            meta="$(mktemp)"
+            curl -sS -H "Authorization: Bearer ${GH_PAT}" -H "Accept: application/vnd.github+json" \
+              "${API}/repos/${full}" > "${meta}" 2>/dev/null || true
+
+            if [ "${BRANCH_STRATEGY}" = "main-only" ]; then
+              # Only scan default branch
+              default_branch=$(jq -r '.default_branch // "main"' < "${meta}")
+              echo "${default_branch}" > "branches-${full//\//__}.txt"
+              rm -f "${meta}"
+              echo "1"
+              return
+            fi
+
+            # Calculate cutoff date for recent branches
+            CUTOFF_DATE=""
+            if [ "${BRANCH_STRATEGY}" = "main-recent" ] || [ "${SKIP_STALE_BRANCHES}" = "true" ]; then
+              lookback_days="${BRANCH_LOOKBACK_DAYS}"
+              [ "${SKIP_STALE_BRANCHES}" = "true" ] && lookback_days=90
+              CUTOFF_DATE=$(date -u -d "${lookback_days} days ago" +%Y-%m-%dT%H:%M:%SZ)
+            fi
+
+            while :; do
+              tmp="$(mktemp)"; code=0
+              code="$(curl -sS -w '%{http_code}' -o "${tmp}" \
+                -H "Authorization: Bearer ${GH_PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "${API}/repos/${full}/branches?per_page=100&page=${page}")" || code=000
+              if [ "${code}" != "200" ]; then
+                echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"list_branches\",\"status\":${code},\"message\":\"GET /repos/${full}/branches page=${page}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
+                rm -f "${tmp}"; break
+              fi
+              count="$(jq 'length' < "${tmp}")"
+              if [ "${count}" -eq 0 ] && [ "$page" -eq 1 ]; then any=0; rm -f "${tmp}"; break; fi
+              if [ "${count}" -eq 0 ]; then rm -f "${tmp}"; break; fi
+
+              # Filter branches based on strategy
+              if [ "${BRANCH_STRATEGY}" = "main-recent" ] && [ -n "${CUTOFF_DATE}" ]; then
+                # Get default branch + recent branches
+                default_branch=$(jq -r '.default_branch // "main"' < "${meta}")
+                jq -r --arg cutoff "${CUTOFF_DATE}" --arg default "${default_branch}" \
+                  '.[] | select(.name == $default or .commit.commit.committer.date >= $cutoff) | .name' \
+                  < "${tmp}" >> "branches-${full//\//__}.txt"
+              elif [ "${BRANCH_STRATEGY}" = "protected" ]; then
+                # Only protected branches
+                jq -r '.[] | select(.protected == true) | .name' < "${tmp}" >> "branches-${full//\//__}.txt"
+              else
+                # All branches (default)
+                jq -r '.[].name' < "${tmp}" >> "branches-${full//\//__}.txt"
+              fi
+
+              rm -f "${tmp}"; any=1
+              [ "${count}" -lt 100 ] && break
+              page=$((page+1))
+            done
+            rm -f "${meta}"
+            echo "${any}"
+          }
+
+          calc_timeout() {
+            local size_kb=$1
+            if [ "${ADAPTIVE_TIMEOUT}" != "true" ]; then
+              echo "${PER_REPO_TIMEOUT}"
+              return
+            fi
+            # Adaptive timeout based on repo size
+            if [ "${size_kb}" -lt 1000 ]; then
+              echo "2m"
+            elif [ "${size_kb}" -lt 10000 ]; then
+              echo "5m"
+            elif [ "${size_kb}" -lt 100000 ]; then
+              echo "10m"
+            else
+              echo "15m"
+            fi
+          }
+
+          scan_one() {
+            local full="$1"
+            local repo_size="${2:-0}"
+            local out="tmp-findings-${ORG}/${full//\//__}.ndjson"
+            local err="tmp-logs-${ORG}/${full//\//__}.stderr.log"
+            local REPO_URL="https://${GH_PAT}:x-oauth-basic@github.com/${full}.git"
+
+            # Calculate timeout for this repo
+            local timeout=$(calc_timeout "${repo_size}")
+
+            echo "[${ORG}] scanning ${full} (size: ${repo_size}KB, timeout: ${timeout}, mode: ${SCAN_MODE})"
+
+            # NOTE: TruffleHog doesn't support date-based --since filtering
+            # It only supports --since-commit with commit references (branch names/hashes)
+            # For comprehensive security scanning, we scan full history
+            # To use commit-based filtering, add: --since-commit main --branch <branch-name>
+
+            branches_found="$(list_branches_api "${full}")"
+            if [ "${ALL_HEADS}" = "true" ] && [ "${branches_found}" = "1" ]; then
+              while read -r br; do
+                [ -z "$br" ] && continue
+                # Early termination with --kill-after
+                timeout --kill-after=30s "${timeout}" docker run --rm \
+                  -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
+                  -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${REPO_URL}" \
+                  --branch "$br" "${EXTRA_FLAGS[@]}" >> "$out" 2>> "$err" || {
+                    local exit_code=$?
+                    if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
+                      echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"branch\":\"${br}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
+                      echo "[${ORG}] ${full}:${br} TIMEOUT after ${timeout}"
+                    fi
+                  }
+              done < "branches-${full//\//__}.txt"
+            else
+              timeout --kill-after=30s "${timeout}" docker run --rm \
+                -e TRUFFLEHOG_DISABLE_UPDATER="${TRUFFLEHOG_DISABLE_UPDATER:-1}" \
+                -v "$PWD:/work" -w /work "${TRUFFLEHOG_IMAGE}" git "${REPO_URL}" \
+                "${EXTRA_FLAGS[@]}" > "$out" 2> "$err" || {
+                  local exit_code=$?
+                  if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
+                    echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
+                    echo "[${ORG}] ${full} TIMEOUT after ${timeout}"
+                  fi
+                }
+            fi
+            if [ -s "$out" ]; then
+              echo "[${ORG}] ${full} findings: $(wc -l < "$out")"
+            else
+              : > "$out"; echo "[${ORG}] ${full} findings: 0"
+              if [ -s "$err" ]; then echo "[${ORG}] ${full} stderr (first 12 lines):"; head -n 12 "$err" | sed 's/[[:cntrl:]]//g'; fi
+            fi
+          }
+
+          # Helper to get repo size
+          get_repo_size() {
+            local repo="$1"
+            grep "^${repo}:" "repos-${ORG}-sizes.txt" 2>/dev/null | cut -d: -f2 || echo "0"
+          }
+
+          running=0
+          while IFS= read -r repo; do
+            [ -z "$repo" ] && continue
+            repo_size=$(get_repo_size "$repo")
+            scan_one "$repo" "$repo_size" & running=$((running+1))
+            if [ "$running" -ge "${SCAN_PAR}" ]; then wait -n || true; running=$((running-1)); fi
+          done < "repos-${ORG}-shard-${SHARD_INDEX1}-of-${SHARD_TOTAL}.txt"
+          wait
+
+          : > "findings-${ORG}.ndjson"
+          if compgen -G "tmp-findings-${ORG}/*.ndjson" > /dev/null; then
+            LC_ALL=C ls -1 "tmp-findings-${ORG}"/*.ndjson | while read -r f; do cat "$f"; done >> "findings-${ORG}.ndjson"
+          fi
+
+          : > "errors-${ORG}.ndjson"
+          [ -f "tmp-errors-${ORG}/errors.ndjson" ] && cat "tmp-errors-${ORG}/errors.ndjson" >> "errors-${ORG}.ndjson" || true
+
+          total_files=$(find "tmp-findings-${ORG}" -name '*.ndjson' | wc -l || echo 0)
+          non_empty=$(find "tmp-findings-${ORG}" -name '*.ndjson' -size +0c | wc -l || echo 0)
+          empty=$(( total_files - non_empty ))
+          echo "[${ORG}] per-repo NDJSON files: total=${total_files}, non-empty=${non_empty}, empty=${empty}"
+          echo "[${ORG}] merged findings lines: $(wc -l < "findings-${ORG}.ndjson" || echo 0)"
+          echo "[${ORG}] merged error lines: $(wc -l < "errors-${ORG}.ndjson" || echo 0)"
+
+          : > "diag-${ORG}/SCAN_SUMMARY.txt"
+          for f in tmp-findings-${ORG}/*.ndjson; do
+            [ -e "$f" ] || continue
+            base="$(basename "${f%.ndjson}")"; repo="${base//__/\/}"
+            count="$(wc -l < "$f" || echo 0)"; errf="tmp-logs-${ORG}/${base}.stderr.log"
+            err_bytes=0; [ -f "$errf" ] && err_bytes="$(stat -c %s "$errf" 2>/dev/null || echo 0)"
+            printf "repo=%s\tfindings=%s\tstderr_bytes=%s\n" "$repo" "$count" "$err_bytes" >> "diag-${ORG}/SCAN_SUMMARY.txt"
+          done
+
+      - name: Always ensure artifacts exist (warn/skip or empty shard)
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          mkdir -p "diag-${ORG}"
+          [ -f "findings-${ORG}.ndjson" ] || : > "findings-${ORG}.ndjson"
+          [ -f "errors-${ORG}.ndjson" ]   || : > "errors-${ORG}.ndjson"
+          [ -f "diag-${ORG}/SCAN_SUMMARY.txt" ] || : > "diag-${ORG}/SCAN_SUMMARY.txt"
+
+      - name: Upload per-shard artifacts (findings/errors)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-findings-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
+          path: |
+            findings-${{ env.ORG }}.ndjson
+            errors-${{ env.ORG }}.ndjson
+          if-no-files-found: warn
+          compression-level: 6
+
+      - name: Upload per-shard troubleshoot bundle (curated)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-troubleshoot-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
+          path: |
+            PLAN_DIAG-${{ env.ORG }}.txt
+            diag-${{ env.ORG }}/SCAN_SUMMARY.txt
+          if-no-files-found: warn
+          compression-level: 6
+
+  summarize-org:
+    runs-on: ubuntu-latest
+    needs: [plan, scan-org]
+    strategy:
+      fail-fast: false
+      matrix:
+        org: ${{ fromJSON(needs.plan.outputs.orgs_json).org }}
+    name: summarize-org (${{ matrix.org }})
+    env:
+      ORG: ${{ matrix.org }}
+      # GitHub App credentials (preferred)
+      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+      # Fallback to PAT
+      GH_PAT: ${{ secrets.GH_PAT }}
+      RUN_URL: ${{ github.run_url }}
+      OPEN_ISSUES: ${{ inputs.open_issues }}
+      INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
+      VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install PyJWT cryptography
+
+      - name: Download shard artifacts for org
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trufflehog-findings-${{ env.ORG }}-shard-*-of-*
+          path: merge/${{ env.ORG }}
+          merge-multiple: true
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Merge shard NDJSON
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT="merge/${ORG}"
+          [ -d "$ROOT" ] || { echo "No shard artifacts found for ${ORG}"; exit 0; }
+          : > "findings-${ORG}-ALL.ndjson"
+          : > "errors-${ORG}-ALL.ndjson"
+          find "$ROOT" -type f -name 'findings-*.ndjson' -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "findings-'${ORG}'-ALL.ndjson"' || true
+          find "$ROOT" -type f -name 'errors-*.ndjson'   -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "errors-'${ORG}'-ALL.ndjson"'   || true
+          echo "Merged findings lines: $(wc -l < "findings-${ORG}-ALL.ndjson" || echo 0)"
+          echo "Merged errors   lines: $(wc -l < "errors-${ORG}-ALL.ndjson" || echo 0)"
+
+      - name: Summarize (verified-unique) and optionally open issues
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
+            echo "[${ORG}] No merged findings to summarize."
+            echo "## TruffleHog summary for \`${ORG}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "- No findings to report" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Check if issues should be created for this org
+          # Priority: INPUT_ISSUES_ORGS > VAR_ISSUES_ORGS
+          ISSUES_CREATION_ORGS="${INPUT_ISSUES_ORGS:-}"
+          if [ -z "${ISSUES_CREATION_ORGS}" ]; then
+            ISSUES_CREATION_ORGS="${VAR_ISSUES_ORGS:-}"
+          fi
+
+          CREATE_ISSUES="false"
+          if [ "${OPEN_ISSUES}" = "true" ]; then
+            if [ -z "${ISSUES_CREATION_ORGS}" ]; then
+              # Empty allowlist means create issues for all orgs
+              CREATE_ISSUES="true"
+              echo "[${ORG}] Issues will be created (allowlist empty = all orgs)"
+            else
+              # Check if current org is in the comma-separated allowlist
+              IFS=',' read -r -a ALLOWED_ORGS <<< "${ISSUES_CREATION_ORGS}"
+              for allowed_org in "${ALLOWED_ORGS[@]}"; do
+                allowed_org="$(echo "$allowed_org" | xargs)"  # trim whitespace
+                if [ "$allowed_org" = "${ORG}" ]; then
+                  CREATE_ISSUES="true"
+                  echo "[${ORG}] Issues will be created (org in allowlist)"
+                  break
+                fi
+              done
+              if [ "${CREATE_ISSUES}" != "true" ]; then
+                echo "[${ORG}] Issues will NOT be created (org not in allowlist: ${ISSUES_CREATION_ORGS})"
+              fi
+            fi
+          fi
+          if [ "${CREATE_ISSUES}" = "true" ]; then DRY=""; else DRY="--dry-run"; fi
+          python3 trufflehog_scanner.py \
+            --ndjson "findings-${ORG}-ALL.ndjson" \
+            --errors-ndjson "errors-${ORG}-ALL.ndjson" \
+            --org "$ORG" \
+            --print-sanitized 25 \
+            --write-summary \
+            --summary-detailed \
+            --summary-detailed-per-repo 9999 \
+            --summary-detailed-max 5000 \
+            --run-url "$RUN_URL" \
+            --scanner-repo "${{ github.repository }}" \
+            --exclude-patterns-file .github/trufflehog/false_positives.txt \
+            --max-workers 8 \
+            --log-level INFO \
+            ${DRY}
+
+      # Keep: 401 is hard-fail. 403 is only a warning in the summary.
+      - name: Fail job if any 401 auth errors were observed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ -s "errors-${ORG}-ALL.ndjson" ] && grep -q '"status":401' "errors-${ORG}-ALL.ndjson"; then
+            echo "::error title=Auth error detected (401)::Found one or more 401 responses while scanning ${ORG}."
+            exit 1
+          fi
+
+      - name: Upload merged artifacts (per-org)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-findings-${{ env.ORG }}-ALL
+          path: |
+            findings-${{ env.ORG }}-ALL.ndjson
+            errors-${{ env.ORG }}-ALL.ndjson
+          if-no-files-found: warn
+          compression-level: 6
+
+  workflow-summary:
+    runs-on: ubuntu-latest
+    needs: [plan, summarize-org]
+    if: always()
+    steps:
+      - name: Generate workflow summary
+        shell: bash
+        env:
+          TOTAL_REPOS: ${{ needs.plan.outputs.total_repos }}
+          TOTAL_SHARDS: ${{ needs.plan.outputs.total_shards }}
+          ORGS_JSON: ${{ needs.plan.outputs.orgs_json }}
+          OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
+          SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
+          PER_REPO_TIMEOUT: ${{ vars.PER_REPO_TIMEOUT || '5m' }}
+          SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
+          REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
+          SCAN_RESULTS: ${{ inputs.scan_results || vars.DEFAULT_SCAN_RESULTS || 'verified,unknown' }}
+          DEEP_SCAN: ${{ inputs.deep_scan || vars.DEFAULT_DEEP_SCAN || false }}
+          BRANCH_STRATEGY: ${{ inputs.deep_scan == true && 'all' || inputs.branch_strategy || vars.DEFAULT_BRANCH_STRATEGY || 'main-recent' }}
+          BRANCH_LOOKBACK_DAYS: ${{ inputs.branch_lookback_days || vars.DEFAULT_BRANCH_LOOKBACK_DAYS || '30' }}
+          SCAN_MODE: ${{ inputs.deep_scan == true && 'full' || inputs.scan_mode || vars.DEFAULT_SCAN_MODE || 'recent' }}
+          SCAN_LOOKBACK_DAYS: ${{ inputs.scan_lookback_days || vars.DEFAULT_SCAN_LOOKBACK_DAYS || '7' }}
+          ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
+          SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
+          SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
+        run: |
+          set -Eeuo pipefail
+
+          {
+            echo "# TruffleHog Scan Workflow Summary"
+            echo ""
+            echo "## Configuration"
+            echo "| Setting | Value |"
+            echo "|---------|-------|"
+            echo "| Organizations | \`$(jq -r '.org | join(", ")' <<< "$ORGS_JSON")\` |"
+            echo "| Total Repositories | **${TOTAL_REPOS}** |"
+            echo "| Total Shards | **${TOTAL_SHARDS}** |"
+            echo "| Repos per Shard (target) | ${REPOS_PER_SHARD} |"
+            echo "| Max Shards per Org | ${SHARD_CAP} |"
+            echo "| Concurrent Scans | ${SCAN_PAR} |"
+            echo "| Timeout per Repo | ${PER_REPO_TIMEOUT} |"
+            echo "| Results Filter | ${SCAN_RESULTS} |"
+            echo "| Create Issues | ${OPEN_ISSUES} |"
+            echo ""
+            echo "## Scan Configuration"
+            echo "| Feature | Value |"
+            echo "|---------|-------|"
+            echo "| Deep Scan Mode | ${DEEP_SCAN} |"
+            echo "| Branch Strategy | ${BRANCH_STRATEGY} |"
+            echo "| Branch Lookback Days | ${BRANCH_LOOKBACK_DAYS} |"
+            echo "| Scan Mode | ${SCAN_MODE} |"
+            echo "| Scan Lookback Days | ${SCAN_LOOKBACK_DAYS} |"
+            echo "| Adaptive Timeout | ${ADAPTIVE_TIMEOUT} |"
+            echo "| Skip Stale Branches | ${SKIP_STALE_BRANCHES} |"
+            echo "| Size-Based Sharding | ${SIZE_BASED_SHARDING} |"
+            echo ""
+            [ "${DEEP_SCAN}" = "true" ] && echo "> **Deep scan mode enabled**: Scanning ALL branches and ALL commits (ignores branch/scan strategy settings)"
+            [ "${BRANCH_STRATEGY}" = "main-recent" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Branch filtering enabled**: Scanning default branch + branches updated in last ${BRANCH_LOOKBACK_DAYS} days"
+            [ "${BRANCH_STRATEGY}" = "all" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **All branches mode**: Scanning all branches in each repository"
+            [ "${SCAN_MODE}" = "recent" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Time-based scanning enabled**: Only scanning commits from last ${SCAN_LOOKBACK_DAYS} days"
+            [ "${SCAN_MODE}" = "full" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Full history scan**: Scanning all commits in repository history"
+            [ "${ADAPTIVE_TIMEOUT}" = "true" ] && echo "> **Adaptive timeout enabled**: Smaller repos get shorter timeouts (2-5m), large repos get longer (10-15m)"
+            [ "${SKIP_STALE_BRANCHES}" = "true" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Stale branch filtering**: Skipping branches with no activity in 90 days"
+            [ "${SIZE_BASED_SHARDING}" = "true" ] && echo "> **Size-based sharding enabled**: Repos distributed by size for better load balancing"
+            echo ""
+            echo "## Status"
+            echo "- Scan completed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Workflow run: ${{ github.run_url }}"
+            echo ""
+            echo "> Per-organization detailed findings are shown in the summaries above."
+          } >> "$GITHUB_STEP_SUMMARY"

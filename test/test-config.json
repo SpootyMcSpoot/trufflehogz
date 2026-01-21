@@ -1,0 +1,36 @@
+{
+  "testEnvironment": "production-replica",
+  "credentials": {
+    "aws": {
+      "accessKeyId": "AKIAIOSFODNN7EXAMPLE7",
+      "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY7",
+      "region": "ap-southeast-1"
+    },
+    "github": {
+      "token": "ghp_TestConfigGitHubToken12345678901234567",
+      "webhookSecret": "github_webhook_secret_1234567890abcdefghijklmnop"
+    },
+    "stripe": {
+      "secretKey": "sk_live_51ABCDEFGHIJKLMNOPqrstuvwxyzABCDEFGHIJKLmnopqrstuvwxyzABCDEF",
+      "webhookSecret": "whsec_test_1234567890abcdefghijklmnopqrstuvwxyz"
+    },
+    "slack": {
+      "botToken": "xoxb-test-1234567890-1234567890-ABCDEFGHIJKLMNOPqrstuv",
+      "appToken": "xapp-1-A1234567890-1234567890-abcdefghijklmnopqrstuvwxyz1234567890abcd"
+    },
+    "database": {
+      "connectionString": "mongodb+srv://test_admin:T3st_M0ng0_P@$$w0rd!2024@cluster-test.mongodb.net/test?retryWrites=true&w=majority"
+    },
+    "jwt": {
+      "privateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7VJTUt9Us8cKj\nMzEfYyjiWA4R4/M2bS1+fWIcPm15A4ckqqj1\n-----END PRIVATE KEY-----",
+      "secret": "jwt_test_secret_key_very_long_and_secure_2024!"
+    },
+    "sendgrid": {
+      "apiKey": "SG.test_sendgrid_key.1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+    },
+    "twilio": {
+      "accountSid": "ACtesttwilio123456789012345678901234",
+      "authToken": "testtwilioauthtoken123456789012345678"
+    }
+  }
+}

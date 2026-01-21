@@ -1,0 +1,130 @@
+# Self-Scan Workflow
+# Runs TruffleHog against this repository to validate detection capabilities
+# and verify the scanner processes findings correctly.
+
+name: Self-Scan Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trufflehog-scan:
+    name: TruffleHog Self-Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install TruffleHog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run TruffleHog scan
+        id: scan
+        run: |
+          # Scan the repository and output findings as JSON
+          trufflehog git file://. --json --no-verification > findings.ndjson 2>&1 || true
+
+          # Count findings
+          FINDING_COUNT=$(wc -l < findings.ndjson | tr -d ' ')
+          echo "finding_count=$FINDING_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $FINDING_COUNT potential secrets"
+
+      - name: Validate findings detected
+        run: |
+          EXPECTED_MIN=10  # We expect at least 10 test secrets to be found
+          ACTUAL=${{ steps.scan.outputs.finding_count }}
+
+          echo "Expected at least $EXPECTED_MIN findings, got $ACTUAL"
+
+          if [ "$ACTUAL" -lt "$EXPECTED_MIN" ]; then
+            echo "ERROR: TruffleHog did not detect expected test fixtures"
+            echo "This may indicate a problem with the scanner or test data"
+            exit 1
+          fi
+
+          echo "SUCCESS: TruffleHog detected $ACTUAL test secrets as expected"
+
+      - name: Upload findings artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-findings
+          path: findings.ndjson
+          retention-days: 7
+
+  python-lint:
+    name: Python Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy
+
+      - name: Run ruff linter
+        run: |
+          ruff check trufflehog_scanner.py scripts/ --ignore E501
+
+      - name: Run ruff formatter check
+        run: |
+          ruff format --check trufflehog_scanner.py scripts/ || true
+
+  scanner-test:
+    name: Scanner Unit Test
+    runs-on: ubuntu-latest
+    needs: trufflehog-scan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download findings
+        uses: actions/download-artifact@v4
+        with:
+          name: trufflehog-findings
+
+      - name: Test scanner validation mode
+        run: |
+          python trufflehog_scanner.py \
+            --ndjson findings.ndjson \
+            --validate \
+            --org test-org \
+            --log-level INFO
+
+      - name: Test scanner dry-run mode
+        env:
+          GH_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python trufflehog_scanner.py \
+            --ndjson findings.ndjson \
+            --dry-run \
+            --org test-org \
+            --title-prefix "[Test]" \
+            --print-sanitized 5 \
+            --log-level DEBUG

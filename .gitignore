@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# TruffleHog cache
+.trufflehog_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment and secrets (never commit real credentials)
+.env
+.env.*
+!.env.example
+
+# Private keys (allow keys/ for test fixtures)
+*.pem
+*.key
+# Note: keys/ is intentionally tracked for TruffleHog test fixtures
+# Real keys should NEVER be committed - see TEST_FIXTURES.md
+
+# Logs
+*.log
+logs/
