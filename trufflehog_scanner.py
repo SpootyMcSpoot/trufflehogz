@@ -78,6 +78,22 @@ except ImportError:
     JWT_AVAILABLE = False
     logging.warning("PyJWT not available, GitHub App authentication disabled")
 
+# ---------------------------- Helper functions ----------------------------
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Safely parse an integer environment variable, returning default on failure."""
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+def _severity_rank(sev: str) -> int:
+    """Get numeric rank for severity label, with safe default for unknown values."""
+    try:
+        return SEVERITY_ORDER.index(sev)
+    except ValueError:
+        return 1  # Default to sec:medium rank
+
 # ---------------------------- Configuration constants ----------------------------
 
 API_BASE = "https://api.github.com"
@@ -96,17 +112,23 @@ DEFAULT_ISSUE_DEDUP_DAYS = 7      # Days to search for existing issues
 
 class RateLimiter:
     def __init__(self, calls_per_sec: float = DEFAULT_RATE_LIMIT_PER_SEC):
-        self.interval = 1.0 / max(0.1, calls_per_sec)
+        self.interval = 1.0 / max(0.1, abs(calls_per_sec) if calls_per_sec else DEFAULT_RATE_LIMIT_PER_SEC)
         self.lock = threading.Lock()
         self.last = 0.0
 
     def wait(self) -> None:
+        # Calculate wait time while holding lock, then release before sleeping
+        # to avoid blocking other threads unnecessarily
+        wait_for = 0.0
         with self.lock:
             now = time.time()
             wait_for = self.last + self.interval - now
             if wait_for > 0:
-                time.sleep(wait_for)
-            self.last = time.time()
+                self.last = now + wait_for  # Reserve our slot
+            else:
+                self.last = now
+        if wait_for > 0:
+            time.sleep(wait_for)
 
 GLOBAL_LIMITER = RateLimiter(calls_per_sec=DEFAULT_RATE_LIMIT_PER_SEC)
 
@@ -261,7 +283,7 @@ def labels_for_items(items: List[Dict[str, Any]], extra: Optional[List[str]] = N
         typ = DETECTOR_TYPES.get(det, "secret:generic")
         labels.add(sev)
         labels.add(typ)
-        if SEVERITY_ORDER.index(sev) > SEVERITY_ORDER.index(highest):
+        if _severity_rank(sev) > _severity_rank(highest):
             highest = sev
     labels.add("needs-triage")
     if extra:
@@ -447,7 +469,7 @@ class GHClient:
             )
             raise
         except URLError as e:
-            logging.warning("URLError on %s %s attempt=%d error=%s", method, path, e)
+            logging.warning("URLError on %s %s attempt=%d error=%s", method, path, attempt, e)
             raise
 
     def call(self, method: str, path: str, payload: Optional[dict] = None,
@@ -457,7 +479,6 @@ class GHClient:
             return {}
         for attempt in range(1, max_retries + 1):
             try:
-                GLOBAL_LIMITER.wait()
                 return self._req(method, path, payload, attempt)
             except HTTPError as e:
                 if e.code in (400, 401, 404, 422):
@@ -613,7 +634,8 @@ class GHClient:
     def get_labels(self, repo: str) -> List[str]:
         names: List[str] = []
         page = 1
-        while True:
+        max_pages = 10  # Guard against infinite loops (1000 labels should be enough)
+        while page <= max_pages:
             data = self.call("GET", f"/repos/{repo}/labels?per_page=100&page={page}", None)
             if not isinstance(data, list) or not data:
                 break
@@ -1081,7 +1103,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--title-prefix", default="[TruffleHog]")
     p.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
-    p.add_argument("--print-sanitized", type=int, default=int(os.environ.get("MAX_FINDING_LOG_LINES", "0")))
+    p.add_argument("--print-sanitized", type=int, default=_safe_int_env("MAX_FINDING_LOG_LINES", 0))
     p.add_argument("--write-summary", action="store_true")
     p.add_argument("--org", default=os.environ.get("ORG", ""))
 
@@ -1158,7 +1180,7 @@ def main() -> int:
         token = get_auth_token()
     except ValueError as e:
         logging.info("Skipping issue creation: %s", e)
-        return 0 if os.path.exists(args.json) else 0
+        return 0
 
     findings = load_findings(args.json, exclude_regexes)
     if not findings:
