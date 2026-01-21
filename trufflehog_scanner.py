@@ -1220,4 +1220,6 @@ def _secure_entrypoint():
         code = 1
     sys.exit(code)
 
-_secure_entrypoint()
+
+if __name__ == "__main__":
+    _secure_entrypoint()
