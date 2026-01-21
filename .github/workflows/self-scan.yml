@@ -10,6 +10,22 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      scan_public_orgs:
+        description: 'Scan public GitHub orgs'
+        required: false
+        default: false
+        type: boolean
+      public_orgs:
+        description: 'Comma-separated list of public orgs to scan (e.g., "OWASP,trufflesecurity")'
+        required: false
+        default: ''
+        type: string
+
+env:
+  # Default public orgs for testing (only used when scan_public_orgs is true)
+  # These are intentionally vulnerable or test repos
+  SELFSCAN_ORGS: ${{ inputs.public_orgs || '' }}
 
 permissions:
   contents: read
@@ -60,6 +76,85 @@ jobs:
           name: trufflehog-findings
           path: findings.ndjson
           retention-days: 7
+
+  public-org-scan:
+    name: Public Org Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.scan_public_orgs == true && inputs.public_orgs != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install TruffleHog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Scan public orgs
+        id: public_scan
+        env:
+          ORGS_LIST: ${{ inputs.public_orgs }}
+        run: |
+          echo "Scanning public orgs: $ORGS_LIST"
+
+          # Create output directory
+          mkdir -p public-findings
+
+          TOTAL_FINDINGS=0
+          ORGS_SCANNED=0
+
+          # Split comma-separated list and scan each org
+          IFS=',' read -ra ORGS <<< "$ORGS_LIST"
+          for org in "${ORGS[@]}"; do
+            # Trim whitespace
+            org=$(echo "$org" | xargs)
+
+            if [ -z "$org" ]; then
+              continue
+            fi
+
+            echo "----------------------------------------"
+            echo "Scanning org: $org"
+            echo "----------------------------------------"
+
+            # Scan org's public repos (no verification to avoid API calls)
+            OUTPUT_FILE="public-findings/${org}.ndjson"
+            trufflehog github --org="$org" --json --no-verification > "$OUTPUT_FILE" 2>&1 || true
+
+            # Count findings for this org
+            ORG_FINDINGS=$(wc -l < "$OUTPUT_FILE" | tr -d ' ')
+            echo "Found $ORG_FINDINGS potential secrets in $org"
+
+            TOTAL_FINDINGS=$((TOTAL_FINDINGS + ORG_FINDINGS))
+            ORGS_SCANNED=$((ORGS_SCANNED + 1))
+          done
+
+          echo "----------------------------------------"
+          echo "SUMMARY"
+          echo "----------------------------------------"
+          echo "Orgs scanned: $ORGS_SCANNED"
+          echo "Total findings: $TOTAL_FINDINGS"
+
+          # Combine all findings
+          cat public-findings/*.ndjson > public-findings/all-findings.ndjson 2>/dev/null || touch public-findings/all-findings.ndjson
+
+          echo "orgs_scanned=$ORGS_SCANNED" >> $GITHUB_OUTPUT
+          echo "total_findings=$TOTAL_FINDINGS" >> $GITHUB_OUTPUT
+
+      - name: Upload public org findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-org-findings
+          path: public-findings/
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          echo "## Public Org Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Orgs Scanned**: ${{ steps.public_scan.outputs.orgs_scanned }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Findings**: ${{ steps.public_scan.outputs.total_findings }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Findings artifacts are available for download." >> $GITHUB_STEP_SUMMARY
 
   python-lint:
     name: Python Lint & Type Check
