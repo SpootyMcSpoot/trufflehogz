@@ -68,7 +68,7 @@ import threading
 import time
 from typing import Any, Dict, Generator, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus, quote as urlquote, urlparse
+from urllib.parse import quote as urlquote, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -625,7 +625,7 @@ class GHClient:
 
     def create_labels_if_needed(self, repo: str, labels: List[str]) -> None:
         existing = set(self.get_labels(repo))
-        missing = [l for l in labels if l not in existing]
+        missing = [label for label in labels if label not in existing]
         for lbl in missing:
             try:
                 self.call("POST", f"/repos/{repo}/labels", {"name": lbl})
@@ -923,7 +923,7 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
 def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
     count_text = "1 verified secret" if len(items) == 1 else f"{len(items)} verified secrets"
     header = [
-        f"## Secret Detection Alert",
+        "## Secret Detection Alert",
         "",
         f"**Status**: {count_text} found in this repository",
         f"**Scan**: [View workflow run]({run_url})" if run_url else "",
