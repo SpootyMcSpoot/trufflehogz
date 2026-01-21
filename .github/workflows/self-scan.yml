@@ -199,6 +199,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run unit tests
+        run: |
+          pytest test_trufflehog_scanner.py -v
+
       - name: Download findings
         uses: actions/download-artifact@v4
         with:
