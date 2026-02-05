@@ -353,6 +353,7 @@ def file_path(o: Dict[str, Any]) -> str:
         ["SourceMetadata", "Data", "Git", "file"],
         ["SourceMetadata", "Data", "Github", "file"],
         ["SourceMetadata", "Data", "GitHub", "file"],
+        ["SourceMetadata", "Data", "Filesystem", "file"],
         ["SourceMetadata", "Data", "file"],
     ):
         v = deepget(o, path)
@@ -365,6 +366,7 @@ def line_no(o: Dict[str, Any]) -> Optional[int]:
         ["SourceMetadata", "Data", "Git", "line"],
         ["SourceMetadata", "Data", "Github", "line"],
         ["SourceMetadata", "Data", "GitHub", "line"],
+        ["SourceMetadata", "Data", "Filesystem", "line"],
         ["SourceMetadata", "Data", "line"],
     ):
         v = deepget(o, path)
@@ -990,8 +992,8 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         path = it.get("file", "") or ""
         ln = it.get("line")
         sha = it.get("commit")
-        # Use original_repo for link if available (consolidation mode)
-        link_repo = it.get("original_repo") or repo
+        # Use link_repo for proper link generation (supports filesystem scans with --target-repo)
+        link_repo = it.get("link_repo") or it.get("original_repo") or repo
         link_url = line_link(link_repo, sha, path, ln)
         ln_str = str(ln) if ln is not None else ""
 
@@ -1242,9 +1244,18 @@ def main() -> int:
     if args.target_repo:
         all_items = []
         for repo, items in findings.items():
-            # Annotate each item with its original repo for the issue body
+            # Annotate each item with link_repo for proper link generation
             for item in items:
                 item["original_repo"] = repo
+                # For filesystem scans, use target-repo for link generation
+                if repo == "_filesystem_":
+                    item["link_repo"] = args.target_repo
+                    # Strip /repo/ prefix from filesystem paths (docker mount point)
+                    fpath = item.get("file", "")
+                    if fpath.startswith("/repo/"):
+                        item["file"] = fpath[6:]  # Remove "/repo/" prefix
+                else:
+                    item["link_repo"] = repo
             all_items.extend(items)
         findings = {args.target_repo: all_items}
         logging.info("Using target-repo override: %s (consolidated %d findings)", args.target_repo, len(all_items))
