@@ -718,6 +718,45 @@ jobs:
           echo "Merged findings lines: $(wc -l < "findings-${ORG}-ALL.ndjson" || echo 0)"
           echo "Merged errors   lines: $(wc -l < "errors-${ORG}-ALL.ndjson" || echo 0)"
 
+      - name: Analyze findings breakdown
+        id: analyze
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "verified=0" >> $GITHUB_OUTPUT
+            echo "unverified=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          TOTAL=$(wc -l < "findings-${ORG}-ALL.ndjson" | tr -d ' ')
+          VERIFIED=$(jq -r 'select(.Verified == true)' "findings-${ORG}-ALL.ndjson" | wc -l | tr -d ' ')
+          UNVERIFIED=$((TOTAL - VERIFIED))
+
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+          echo "verified=$VERIFIED" >> $GITHUB_OUTPUT
+          echo "unverified=$UNVERIFIED" >> $GITHUB_OUTPUT
+
+          # Write findings breakdown to summary
+          {
+            echo "## TruffleHog Findings for \`${ORG}\`"
+            echo ""
+            echo "| Category | Count |"
+            echo "|----------|-------|"
+            echo "| **Total** | **${TOTAL}** |"
+            echo "| Verified | ${VERIFIED} |"
+            echo "| Unverified | ${UNVERIFIED} |"
+            echo ""
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "### By Detector Type (Top 10)"
+              echo "\`\`\`"
+              jq -r '.DetectorName' "findings-${ORG}-ALL.ndjson" | sort | uniq -c | sort -rn | head -10
+              echo "\`\`\`"
+              echo ""
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summarize (verified-unique) and optionally open issues
         shell: bash
         run: |

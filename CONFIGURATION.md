@@ -4,14 +4,15 @@ Configuration reference for TruffleHog Organization Scanner.
 
 ## Workflow Inputs
 
-10 configurable inputs via Actions UI (Run workflow button).
+11 configurable inputs via Actions UI (Run workflow button).
 
 ### Basic
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
-| `org_names` | comma-separated | (from var) | Organizations to scan |
+| `org_names` | comma-separated | trufflesecurity,gitleaks | Organizations to scan |
 | `open_issues` | true/false | false | Create GitHub issues |
 | `issues_creation_orgs` | comma-separated | (empty) | Orgs for issue creation (empty = all) |
+| `repo_visibility` | public, all, private | public | Filter repos by visibility |
 
 ### Deep Scan
 | Input | Options | Default | Description |
@@ -25,7 +26,7 @@ Configuration reference for TruffleHog Organization Scanner.
 |-------|---------|---------|
 | `scan_parallel` | 4, 8, 12, 16 | 8 |
 | `per_repo_timeout` | 3m, 5m, 10m, 15m | 5m |
-| `scan_results` | verified, verified+unknown, all | verified+unknown |
+| `scan_results` | all, verified+unknown, verified | all |
 
 ### Sharding
 | Input | Options | Default |
@@ -108,6 +109,28 @@ scan_parallel: 4
 max_finding_log_lines: 1000
 ```
 **Runtime**: 30-90 min | **Use case**: First comprehensive scan
+
+## Default Test Configuration
+
+When no `TRUFFLEHOG_ORGS` variable is set and no `org_names` input provided, the workflow scans public test repositories:
+
+| Org | Test Repo | Contents |
+|-----|-----------|----------|
+| trufflesecurity | test_keys | AWS creds, SSH key, auth URI |
+| gitleaks | fake-leaks | Various test secrets |
+
+Default settings for testing:
+- `repo_visibility: public` - scans only public repos
+- `scan_results: all` - shows verified and unverified findings
+
+## Workflow Summary
+
+The workflow generates a detailed summary in GitHub Actions showing:
+
+- **Findings table**: Total, Verified, Unverified counts
+- **Detector breakdown**: Top 10 detector types with counts
+- **Configuration**: All scan settings used
+- **Per-org summaries**: Detailed findings for each organization
 
 ---
 

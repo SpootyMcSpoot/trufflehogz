@@ -121,7 +121,8 @@ All repository variables can be overridden by manual workflow inputs. The priori
 
 ##### Default Workflow Input Values
 These set defaults when manual workflow inputs are not provided:
-- **`DEFAULT_SCAN_RESULTS`**: Results filter (default: `verified,unknown`)
+- **`DEFAULT_REPO_VISIBILITY`**: Repo visibility filter (default: `public`)
+- **`DEFAULT_SCAN_RESULTS`**: Results filter (default: `all`)
 - **`DEFAULT_BRANCH_STRATEGY`**: Branch strategy (default: `main-recent`)
 - **`DEFAULT_SCAN_MODE`**: Scan mode (default: `recent`)
 - **`DEFAULT_BRANCH_LOOKBACK_DAYS`**: Branch lookback days (default: `30`)
@@ -159,9 +160,9 @@ Patterns match against: `detector=... | verified=... | repo=... | file=... | red
 
 ### Workflow Inputs
 
-10 configurable inputs via Actions UI:
+11 configurable inputs via Actions UI:
 
-**Basic**: `org_names`, `open_issues`, `issues_creation_orgs`
+**Basic**: `org_names`, `open_issues`, `issues_creation_orgs`, `repo_visibility`
 **Scan Mode**: `deep_scan` (enables full branch/history scan)
 **Performance**: `scan_parallel`, `per_repo_timeout`, `scan_results`
 **Sharding**: `shard_cap`, `repos_per_shard`
@@ -186,12 +187,17 @@ The workflow uses this priority: **Manual Input** > **Repository Variable** > **
 - `SIZE_BASED_SHARDING`: false (use modulo distribution, override with `vars.SIZE_BASED_SHARDING`)
 
 **Scanning**:
-- `SCAN_RESULTS`: verified,unknown (filter results, override with `vars.DEFAULT_SCAN_RESULTS`)
+- `REPO_VISIBILITY`: public (filter by visibility, override with `vars.DEFAULT_REPO_VISIBILITY`)
+- `SCAN_RESULTS`: all (show all findings, override with `vars.DEFAULT_SCAN_RESULTS`)
 - `BRANCH_STRATEGY`: main-recent (default + recent branches, override with `vars.DEFAULT_BRANCH_STRATEGY`)
 - `BRANCH_LOOKBACK_DAYS`: 30 days for recent branches (override with `vars.DEFAULT_BRANCH_LOOKBACK_DAYS`)
 - `SCAN_MODE`: recent (last 7 days of commits, override with `vars.DEFAULT_SCAN_MODE`)
 - `SCAN_LOOKBACK_DAYS`: 7 days (override with `vars.DEFAULT_SCAN_LOOKBACK_DAYS`)
 - `SKIP_STALE_BRANCHES`: true (skip branches >90 days old, controlled by deep_scan)
+
+**Default Test Orgs** (when `TRUFFLEHOG_ORGS` not set):
+- `trufflesecurity` - test_keys repo with intentional secrets
+- `gitleaks` - fake-leaks repo for testing
 
 **Other**:
 - `MAX_REPO_SIZE_KB`: 0 (no size limit, override with `vars.MAX_REPO_SIZE_KB`)
@@ -263,6 +269,12 @@ See **[REMEDIATION.md](REMEDIATION.md)** for complete guide with git-filter-repo
 
 ## Testing
 
+**Self-Test** (default): Run workflow without setting `TRUFFLEHOG_ORGS` - scans public test repos:
+- `trufflesecurity/test_keys` - AWS creds, SSH key, auth URI
+- `gitleaks/fake-leaks` - Various test secrets
+
+**Self-Scan**: Runs on every push, scans this repo's test fixtures in `test/fixtures/`
+
 **Manual Run**: Actions → TruffleHog Org Scan → Run workflow
 
 **Local Testing**:
@@ -274,6 +286,8 @@ python3 trufflehog_scanner.py --ndjson findings.ndjson --org test-org --dry-run
 docker run --rm -v "$PWD:/work" ghcr.io/trufflesecurity/trufflehog:3.90.6 \
   github --repo "https://github.com/owner/repo" --token "$GH_PAT" --json
 ```
+
+**Workflow Summary**: Both workflows display findings breakdown (Total/Verified/Unverified) and top detector types in the GitHub Actions summary.
 
 ## Troubleshooting
 

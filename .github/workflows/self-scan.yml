@@ -157,6 +157,11 @@ jobs:
     name: Summarize Findings
     runs-on: ubuntu-latest
     needs: [plan, scan]
+    outputs:
+      total_findings: ${{ steps.analyze.outputs.total_findings }}
+      verified_count: ${{ steps.analyze.outputs.verified_count }}
+      unverified_count: ${{ steps.analyze.outputs.unverified_count }}
+      detector_breakdown: ${{ steps.analyze.outputs.detector_breakdown }}
     env:
       REPO_NAME: ${{ needs.plan.outputs.repo_name }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -201,18 +206,33 @@ jobs:
           echo "=== Findings Summary ==="
           echo "Total findings: $TOTAL"
 
+          # Count by verification status
+          VERIFIED=$(jq -r 'select(.Verified == true)' findings-self-ALL.ndjson | wc -l | tr -d ' ')
+          UNVERIFIED=$(jq -r 'select(.Verified == false or .Verified == null)' findings-self-ALL.ndjson | wc -l | tr -d ' ')
+          echo "verified_count=$VERIFIED" >> $GITHUB_OUTPUT
+          echo "unverified_count=$UNVERIFIED" >> $GITHUB_OUTPUT
+
           if [ "$TOTAL" -gt 0 ]; then
             echo ""
             echo "=== By Detector Type ==="
-            jq -r '.DetectorName' findings-self-ALL.ndjson | sort | uniq -c | sort -rn
+            DETECTOR_BREAKDOWN=$(jq -r '.DetectorName' findings-self-ALL.ndjson | sort | uniq -c | sort -rn | head -10)
+            echo "$DETECTOR_BREAKDOWN"
 
             echo ""
             echo "=== By File ==="
-            jq -r '.SourceMetadata.Data.Filesystem.file // .SourceMetadata.Data.Git.file // "unknown"' findings-self-ALL.ndjson | sort | uniq -c | sort -rn
+            jq -r '.SourceMetadata.Data.Filesystem.file // .SourceMetadata.Data.Git.file // "unknown"' findings-self-ALL.ndjson | sort | uniq -c | sort -rn | head -10
 
             echo ""
             echo "=== Verified Status ==="
-            jq -r 'if .Verified then "verified" else "unverified" end' findings-self-ALL.ndjson | sort | uniq -c | sort -rn
+            echo "  $VERIFIED verified"
+            echo "  $UNVERIFIED unverified"
+
+            # Save detector breakdown for summary (escape newlines for GitHub output)
+            {
+              echo 'detector_breakdown<<EOF'
+              echo "$DETECTOR_BREAKDOWN"
+              echo 'EOF'
+            } >> $GITHUB_OUTPUT
           fi
 
       - name: Run scanner in validation mode
@@ -298,6 +318,10 @@ jobs:
       REPO_NAME: ${{ needs.plan.outputs.repo_name }}
       SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown,unverified' }}
       SCAN_MODE: ${{ inputs.scan_mode || 'full' }}
+      TOTAL_FINDINGS: ${{ needs.summarize.outputs.total_findings || '0' }}
+      VERIFIED_COUNT: ${{ needs.summarize.outputs.verified_count || '0' }}
+      UNVERIFIED_COUNT: ${{ needs.summarize.outputs.unverified_count || '0' }}
+      DETECTOR_BREAKDOWN: ${{ needs.summarize.outputs.detector_breakdown || '' }}
     steps:
       - name: Generate workflow summary
         run: |
@@ -314,13 +338,21 @@ jobs:
             echo "| Results Filter | ${SCAN_RESULTS} |"
             echo "| TruffleHog Version | ${TRUFFLEHOG_VERSION:-3.92.5} |"
             echo ""
-            echo "## Purpose"
-            echo "This workflow validates:"
-            echo "- TruffleHog can detect test fixtures in \`test/fixtures/\`"
-            echo "- The scanner workflow logic (plan → scan → summarize) works correctly"
-            echo "- The \`trufflehog_scanner.py\` script processes findings correctly"
+            echo "## Findings"
+            echo "| Category | Count |"
+            echo "|----------|-------|"
+            echo "| **Total** | **${TOTAL_FINDINGS}** |"
+            echo "| Verified | ${VERIFIED_COUNT} |"
+            echo "| Unverified | ${UNVERIFIED_COUNT} |"
             echo ""
-            echo "> **Note:** The scanner summary shows 0 verified findings because test secrets are intentionally fake and cannot be verified against real APIs. The validation step checks total findings (verified + unverified)."
+            if [ -n "${DETECTOR_BREAKDOWN}" ]; then
+              echo "### By Detector Type (Top 10)"
+              echo "\`\`\`"
+              echo "${DETECTOR_BREAKDOWN}"
+              echo "\`\`\`"
+              echo ""
+            fi
+            echo "> **Note:** Test secrets are intentionally fake and cannot be verified against real APIs. The validation step checks total findings (verified + unverified)."
             echo ""
             echo "## Status"
             echo "- Scan completed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
