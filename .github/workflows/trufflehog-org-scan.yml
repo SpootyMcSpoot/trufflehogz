@@ -154,13 +154,13 @@ jobs:
       SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
       REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
-      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
+      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
     steps:
       - id: build
         shell: bash
         env:
           ORGS_JSON: ${{ needs.resolve-matrix.outputs.orgs_json }}
-          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
+          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
         run: |
           set -Eeuo pipefail
           mapfile -t ORGS < <(jq -r '.org[]' <<< "${ORGS_JSON}")
@@ -302,7 +302,7 @@ jobs:
       ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
       SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
-      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
+      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -858,7 +858,7 @@ jobs:
           ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
           SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
           SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
-          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
+          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
         run: |
           set -Eeuo pipefail
 
