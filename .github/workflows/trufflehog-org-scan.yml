@@ -1,9 +1,12 @@
-name: "TruffleHog – Org Scan (Non-Public Repos)"
+name: "TruffleHog - Org Scan"
 
 on:
   schedule:
     # Run every Sunday at 6 PM UTC (Sunday evening)
     - cron: '0 18 * * 0'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       org_names:
@@ -19,12 +22,12 @@ on:
       scan_results:
         description: "Results filter"
         required: false
-        default: "verified,unknown"
+        default: "all"
         type: choice
         options:
-          - "verified"
-          - "verified,unknown"
           - "all"
+          - "verified,unknown"
+          - "verified"
       issues_creation_orgs:
         description: "Comma-separated list of orgs where issues should be created (empty = all orgs)"
         required: false
@@ -76,6 +79,15 @@ on:
           - "7"
           - "14"
           - "30"
+      repo_visibility:
+        description: "Repository visibility filter"
+        required: false
+        default: "public"
+        type: choice
+        options:
+          - "public"
+          - "all"
+          - "private"
 
 permissions:
   contents: read
@@ -99,7 +111,10 @@ jobs:
     env:
       INPUT_ORGS: ${{ inputs.org_names }}
       VAR_ORGS: ${{ vars.TRUFFLEHOG_ORGS }}
-      DEFAULT_ORGS: ""
+      # Default to public test orgs for self-testing/validation
+      # - trufflesecurity: test_keys repo with intentional secrets (AWS, SSH, auth URI)
+      # - gitleaks: fake-leaks repo for secret detection testing
+      DEFAULT_ORGS: "trufflesecurity,gitleaks"
     steps:
       - id: set-matrix
         shell: bash
@@ -139,11 +154,13 @@ jobs:
       SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
       REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
+      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
     steps:
       - id: build
         shell: bash
         env:
           ORGS_JSON: ${{ needs.resolve-matrix.outputs.orgs_json }}
+          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
         run: |
           set -Eeuo pipefail
           mapfile -t ORGS < <(jq -r '.org[]' <<< "${ORGS_JSON}")
@@ -211,7 +228,14 @@ jobs:
               fi
               count="$(jq 'length' < "${body}")"
               [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
-              inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select((.visibility != "public") or (.private==true)) ] | length' < "${body}")"
+              # Filter by visibility: all, public, or private
+              if [ "${REPO_VISIBILITY}" = "public" ]; then
+                inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select(.visibility == "public" or .private == false) ] | length' < "${body}")"
+              elif [ "${REPO_VISIBILITY}" = "private" ]; then
+                inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select(.visibility != "public" and .private == true) ] | length' < "${body}")"
+              else
+                inc="$(jq '[ .[] | select(.archived==false and .fork==false) ] | length' < "${body}")"
+              fi
               total=$(( total + inc )); rm -f "${body}"
               [ "${count}" -lt 100 ] && break
               page=$((page+1))
@@ -278,6 +302,7 @@ jobs:
       ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
       SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
+      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -343,13 +368,31 @@ jobs:
             fi
             count="$(jq 'length' < "${body}")"
             [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
-            jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
-              .[] |
-              select(.archived==false and .fork==false) |
-              select((.visibility != "public") or (.private==true)) |
-              select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
-              .full_name
-            ' "${body}" >> "repos-${ORG}.txt"
+            # Filter by visibility: all, public, or private
+            if [ "${REPO_VISIBILITY}" = "public" ]; then
+              jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
+                .[] |
+                select(.archived==false and .fork==false) |
+                select(.visibility == "public" or .private == false) |
+                select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
+                .full_name
+              ' "${body}" >> "repos-${ORG}.txt"
+            elif [ "${REPO_VISIBILITY}" = "private" ]; then
+              jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
+                .[] |
+                select(.archived==false and .fork==false) |
+                select(.visibility != "public" and .private == true) |
+                select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
+                .full_name
+              ' "${body}" >> "repos-${ORG}.txt"
+            else
+              jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
+                .[] |
+                select(.archived==false and .fork==false) |
+                select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
+                .full_name
+              ' "${body}" >> "repos-${ORG}.txt"
+            fi
             rm -f "${body}"
             page=$((page+1))
           done
@@ -776,6 +819,7 @@ jobs:
           ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
           SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
           SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
+          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'all' }}
         run: |
           set -Eeuo pipefail
 
@@ -798,6 +842,7 @@ jobs:
             echo "## Scan Configuration"
             echo "| Feature | Value |"
             echo "|---------|-------|"
+            echo "| Repo Visibility | ${REPO_VISIBILITY} |"
             echo "| Deep Scan Mode | ${DEEP_SCAN} |"
             echo "| Branch Strategy | ${BRANCH_STRATEGY} |"
             echo "| Branch Lookback Days | ${BRANCH_LOOKBACK_DAYS} |"

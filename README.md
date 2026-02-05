@@ -4,6 +4,18 @@
 
 Production-ready GitHub Actions workflow for scanning multiple organizations with TruffleHog OSS. Features intelligent sharding, parallel processing, and automated issue creation.
 
+## Table of Contents
+
+| Document | Description |
+|----------|-------------|
+| [README.md](README.md) | Overview, quick start, and architecture |
+| [SETUP.md](SETUP.md) | PAT creation, org configuration |
+| [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) | GitHub App authentication setup |
+| [CONFIGURATION.md](CONFIGURATION.md) | Workflow inputs, examples, tuning |
+| [REMEDIATION.md](REMEDIATION.md) | Secrets remediation guide |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Performance tuning, issue resolution |
+| [TEST_FIXTURES.md](TEST_FIXTURES.md) | Test secrets documentation |
+
 ## Quick Start
 
 1. **Add authentication**: Go to **Settings → Secrets and variables → Actions → Secrets**
