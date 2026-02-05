@@ -49,13 +49,53 @@ Configuration reference for TruffleHog Organization Scanner.
 | `skip_stale_branches` | true/false | true |
 | `max_finding_log_lines` | 50-1000 | 300 |
 
+## Repository Variables
+
+Override defaults via **Settings > Secrets and variables > Actions > Variables**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRUFFLEHOG_ORGS` | trufflesecurity,gitleaks | Organizations to scan |
+| `DEFAULT_REPO_VISIBILITY` | public | Repo visibility filter |
+| `DEFAULT_SCAN_RESULTS` | all | Results filter |
+| `DEFAULT_BRANCH_STRATEGY` | main-recent | Branch strategy |
+| `DEFAULT_SCAN_MODE` | recent | Scan mode |
+| `DEFAULT_BRANCH_LOOKBACK_DAYS` | 30 | Branch lookback days |
+| `DEFAULT_SCAN_LOOKBACK_DAYS` | 7 | Scan lookback days |
+| `DEFAULT_OPEN_ISSUES` | false | Create issues by default |
+| `DEFAULT_DEEP_SCAN` | false | Enable deep scan by default |
+| `SHARD_CAP` | 10 | Max shards per organization |
+| `REPOS_PER_SHARD` | 50 | Target repos per shard |
+| `SCAN_PAR` | 8 | Concurrent scans per shard |
+| `PER_REPO_TIMEOUT` | 5m | Timeout per repository |
+| `ADAPTIVE_TIMEOUT` | true | Enable adaptive timeouts |
+| `SIZE_BASED_SHARDING` | false | Enable size-based sharding |
+| `MAX_REPO_SIZE_KB` | 0 | Max repo size (0=unlimited) |
+| `MAX_FINDING_LOG_LINES` | 300 | Max lines per finding log |
+| `TRUFFLEHOG_VERSION` | 3.92.5 | TruffleHog version |
+| `TRUFFLEHOG_IMAGE` | ghcr.io/.../3.92.5 | Docker image |
+| `GITHUB_API` | https://api.github.com | API endpoint |
+| `TRUFFLEHOG_ISSUES_ORGS` | (empty) | Orgs for issue creation |
+
+## Visibility Behavior
+
+The `repo_visibility` setting controls which repos are scanned:
+
+| Value | Behavior |
+|-------|----------|
+| `public` | Only public repos. **No org membership required.** |
+| `private` | Only private repos. Requires org membership. |
+| `all` | All repos. Requires org membership for private repos. |
+
+**Public-only scans** (default) skip the org membership check, allowing you to scan public repos in any organization without being a member.
+
 ## Hardcoded Settings
 
 Modify `.github/workflows/trufflehog-org-scan.yml` to change:
 
 | Setting | Value |
 |---------|-------|
-| `trufflehog_version` | 3.90.6 |
+| `trufflehog_version` | 3.92.5 |
 | `enable_size_based_sharding` | false |
 | `max_repo_size_kb` | 0 (unlimited) |
 
