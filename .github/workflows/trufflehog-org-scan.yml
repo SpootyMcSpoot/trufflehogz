@@ -178,33 +178,38 @@ jobs:
           for ORG in "${ORGS[@]}"; do
             echo "::group::Plan for ${ORG}"
 
-            # ---- Membership probe ----
-            memb_body="$(mktemp)"; memb_code=0
-            memb_code="$(curl -sS -w '%{http_code}' -o "${memb_body}" \
-              -H "Authorization: Bearer ${GH_PAT}" \
-              -H "Accept: application/vnd.github+json" \
-              "${API}/user/memberships/orgs/${ORG}")" || memb_code=000
+            # ---- Membership probe (skip for public-only scans) ----
+            # When scanning only public repos, we don't need org membership
+            if [ "${REPO_VISIBILITY}" != "public" ]; then
+              memb_body="$(mktemp)"; memb_code=0
+              memb_code="$(curl -sS -w '%{http_code}' -o "${memb_body}" \
+                -H "Authorization: Bearer ${GH_PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "${API}/user/memberships/orgs/${ORG}")" || memb_code=000
 
-            if [ "${memb_code}" = "401" ]; then
-              warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
-              echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
-              add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
-              echo "::endgroup::"; continue
-            fi
+              if [ "${memb_code}" = "401" ]; then
+                warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
+                echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
+                add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
+                echo "::endgroup::"; continue
+              fi
 
-            if [ "${memb_code}" = "403" ] || [ "${memb_code}" = "404" ] || [ "${memb_code}" = "000" ]; then
-              warn_msg="GET /user/memberships/orgs/${ORG} => ${memb_code}. Ensure PAT is member (state=active) and has 'read:org' + 'repo'."
-              echo "::warning title=No org membership or insufficient scopes::${warn_msg}"
-              add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
-              echo "::endgroup::"; continue
-            fi
+              if [ "${memb_code}" = "403" ] || [ "${memb_code}" = "404" ] || [ "${memb_code}" = "000" ]; then
+                warn_msg="GET /user/memberships/orgs/${ORG} => ${memb_code}. Ensure PAT is member (state=active) and has 'read:org' + 'repo'."
+                echo "::warning title=No org membership or insufficient scopes::${warn_msg}"
+                add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
+                echo "::endgroup::"; continue
+              fi
 
-            state="$(jq -r '.state // ""' < "${memb_body}")"; rm -f "${memb_body}"
-            if [ "${state}" != "active" ]; then
-              warn_msg="Org membership for ${ORG} is not active (state='${state}')."
-              echo "::warning title=Org membership not active::${warn_msg}"
-              add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
-              echo "::endgroup::"; continue
+              state="$(jq -r '.state // ""' < "${memb_body}")"; rm -f "${memb_body}"
+              if [ "${state}" != "active" ]; then
+                warn_msg="Org membership for ${ORG} is not active (state='${state}')."
+                echo "::warning title=Org membership not active::${warn_msg}"
+                add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
+                echo "::endgroup::"; continue
+              fi
+            else
+              echo "Skipping membership check for public-only scan of ${ORG}"
             fi
 
             # ---- Count visible repos ----
