@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-# ===================================================================
-# TEST DATA - NOT REAL CREDENTIALS
-# ===================================================================
-# This file contains intentional fake secrets for TruffleHog testing.
-# These credentials have never been valid and pose no security risk.
-# See TEST_FIXTURES.md for more information.
-# ===================================================================
 """
-Production deployment script (TEST FIXTURE)
+Production deployment script
 """
 
+import os
 import boto3
 import requests
 
@@ -36,14 +30,14 @@ API_SECRET = "sk_prod_zyxwvutsrqponmlkjihgfedcba1234567890"
 
 def deploy_to_s3():
     """Deploy static assets to S3"""
-    _client = boto3.client(
+    client = boto3.client(
         's3',
         aws_access_key_id=AWS_ACCESS_KEY,
         aws_secret_access_key=AWS_SECRET_KEY,
         region_name=AWS_REGION
     )
     print("Deploying to S3...")
-    # Deployment logic would use _client here
+    # Deployment logic here
 
 def notify_deployment():
     """Send deployment notification to Slack"""
@@ -65,11 +59,11 @@ def notify_deployment():
 
 def update_github_status():
     """Update GitHub deployment status"""
-    _headers = {
+    headers = {
         "Authorization": f"token {GITHUB_API_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
-    # API call logic would use _headers here
+    # API call logic here
 
 if __name__ == "__main__":
     print("Starting production deployment...")

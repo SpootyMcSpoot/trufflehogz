@@ -10,19 +10,20 @@ Key features
 - De-dupes repeated findings; only Verified==True are eligible for issues
 - DRY-RUN support
 - Sanitized console preview and Markdown summary (with commit/line links)
-- Diagnostics for JSON (per-repo and merged)
+- Diagnostics for NDJSON (per-repo and merged)
 - False-positive filtering via regex allow-list file (--exclude-patterns-file)
 - Detailed per-repo subsection in summary (detector + link to commit/line)
-- Optional errors JSON inclusion (HTTP errors etc.) into the summary
+- Optional errors NDJSON inclusion (HTTP errors etc.) into the summary
 
 Environment
   GH_APP_ID              GitHub App ID (preferred)
   GH_APP_PRIVATE_KEY     GitHub App private key (PEM format)
   GH_APP_INSTALLATION_ID GitHub App installation ID
   GH_PAT                 GitHub Classic PAT with repo and read:org (fallback)
+  GH_TOKEN               GitHub Actions token (fallback, also checks GITHUB_TOKEN)
 
 CLI
-  --json PATH            TruffleHog JSON path (default: findings.json)
+  --ndjson PATH          TruffleHog NDJSON path (default: findings.ndjson)
   --run-url URL          Link back to the workflow run
   --max-workers N        Thread count (default: min(8, cpu_count()*2))
   --labels "a,b,c"       Extra labels to union with auto labels
@@ -32,13 +33,13 @@ CLI
   --print-sanitized N    Print up to N sanitized VERIFIED finding lines to stdout
   --write-summary        Write a Markdown summary to GITHUB_STEP_SUMMARY
   --org STR              Optional org name for display in logs
-  --errors-json PATH     Optional JSON of errors (e.g., HTTP 401) to include in summary
+  --errors-ndjson PATH   Optional NDJSON of errors (e.g., HTTP 401) to include in summary
 
 Diagnostics
-  --diag-dir PATH        Directory of per-repo .json to inspect
+  --diag-dir PATH        Directory of per-repo .ndjson to inspect
   --diag-max-files N     Max number of files to print diagnostics for (default: 25)
   --diag-max-lines N     Max sanitized lines to print per file (default: 3)
-  --validate             Print stats about --json (total lines, bad lines, unique repos/detectors) and exit (read-only)
+  --validate             Print stats about --ndjson (total lines, bad lines, unique repos/detectors) and exit (read-only)
 
 False-positive filtering
   --exclude-patterns-file PATH
@@ -68,7 +69,7 @@ import threading
 import time
 from typing import Any, Dict, Generator, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote as urlquote, urlparse
+from urllib.parse import quote_plus, quote as urlquote, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -186,6 +187,7 @@ def get_auth_token() -> str:
     Priority:
     1. GitHub App (GH_APP_ID + GH_APP_PRIVATE_KEY + GH_APP_INSTALLATION_ID)
     2. Classic PAT (GH_PAT)
+    3. GitHub Actions token (GH_TOKEN or GITHUB_TOKEN)
     
     Returns: Authentication token
     Raises: ValueError if no authentication method available
@@ -205,7 +207,13 @@ def get_auth_token() -> str:
         logging.info("Authenticating with PAT")
         return pat
     
-    raise ValueError("No authentication method available. Set either GH_PAT or GitHub App credentials (GH_APP_ID, GH_APP_PRIVATE_KEY, GH_APP_INSTALLATION_ID)")
+    # Also check GH_TOKEN and GITHUB_TOKEN for GitHub Actions compatibility
+    gh_token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+    if gh_token:
+        logging.info("Authenticating with GH_TOKEN/GITHUB_TOKEN")
+        return gh_token
+    
+    raise ValueError("No authentication method available. Set either GH_PAT, GH_TOKEN, or GitHub App credentials (GH_APP_ID, GH_APP_PRIVATE_KEY, GH_APP_INSTALLATION_ID)")
 
 # ---------------------------- Logging ----------------------------
 
@@ -292,13 +300,6 @@ def labels_for_items(items: List[Dict[str, Any]], extra: Optional[List[str]] = N
 
 # ---------------------------- Helpers to read fields ----------------------------
 
-# Common source metadata paths for TruffleHog findings (order matters: try most specific first)
-_SOURCE_PATHS = (
-    ["SourceMetadata", "Data", "Git"],
-    ["SourceMetadata", "Data", "GitHub"],
-    ["SourceMetadata", "Data"],
-)
-
 def deepget(obj: Dict[str, Any], path: List[str]) -> Optional[Any]:
     cur: Any = obj
     for k in path:
@@ -307,14 +308,6 @@ def deepget(obj: Dict[str, Any], path: List[str]) -> Optional[Any]:
         else:
             return None
     return cur
-
-def _get_source_field(obj: Dict[str, Any], field: str) -> Optional[Any]:
-    """Extract a field from source metadata, checking all common paths."""
-    for base in _SOURCE_PATHS:
-        v = deepget(obj, base + [field])
-        if v is not None:
-            return v
-    return None
 
 def sanitize_repo(repo: str) -> str:
     if not repo or "/" not in repo:
@@ -340,32 +333,56 @@ def extract_repo(owner_repo_or_url: Optional[str]) -> Optional[str]:
     return None
 
 def find_repo(o: Dict[str, Any]) -> Optional[str]:
-    repo_val = _get_source_field(o, "repository")
-    if repo_val:
-        repo = extract_repo(repo_val)
+    candidates = [
+        deepget(o, ["SourceMetadata", "Data", "Git", "repository"]),
+        deepget(o, ["SourceMetadata", "Data", "Github", "repository"]),  # trufflehog uses lowercase 'h'
+        deepget(o, ["SourceMetadata", "Data", "GitHub", "repository"]),  # also check capital H for compat
+        deepget(o, ["SourceMetadata", "Data", "repository"]),
+    ]
+    for c in candidates:
+        repo = extract_repo(c)
         if repo:
             return repo
-    # Fallback: search JSON for GitHub URL pattern
     m = re.search(r'https://github\.com/([^/]+)/([^/"\s]+)', json.dumps(o))
     if m:
         return sanitize_repo(f"{m.group(1)}/{m.group(2)}")
     return None
 
 def file_path(o: Dict[str, Any]) -> str:
-    v = _get_source_field(o, "file")
-    return str(v) if v else ""
+    for path in (
+        ["SourceMetadata", "Data", "Git", "file"],
+        ["SourceMetadata", "Data", "Github", "file"],
+        ["SourceMetadata", "Data", "GitHub", "file"],
+        ["SourceMetadata", "Data", "file"],
+    ):
+        v = deepget(o, path)
+        if v:
+            return str(v)
+    return ""
 
 def line_no(o: Dict[str, Any]) -> Optional[int]:
-    v = _get_source_field(o, "line")
-    if isinstance(v, int):
-        return v
-    if isinstance(v, str) and v.isdigit():
-        return int(v)
+    for path in (
+        ["SourceMetadata", "Data", "Git", "line"],
+        ["SourceMetadata", "Data", "Github", "line"],
+        ["SourceMetadata", "Data", "GitHub", "line"],
+        ["SourceMetadata", "Data", "line"],
+    ):
+        v = deepget(o, path)
+        if isinstance(v, int) or (isinstance(v, str) and v.isdigit()):
+            return int(v)
     return None
 
 def commit_sha(o: Dict[str, Any]) -> Optional[str]:
-    v = _get_source_field(o, "commit")
-    return str(v) if v else None
+    for path in (
+        ["SourceMetadata", "Data", "Git", "commit"],
+        ["SourceMetadata", "Data", "Github", "commit"],
+        ["SourceMetadata", "Data", "GitHub", "commit"],
+        ["SourceMetadata", "Data", "commit"],
+    ):
+        v = deepget(o, path)
+        if v:
+            return str(v)
+    return None
 
 def shortpath(p: str) -> str:
     p = str(p or "").strip()
@@ -686,8 +703,8 @@ def make_finding_key(repo: str, detector: str, path: str,
     canonical_commit = str(commit) if commit else ""
     return (sanitize_repo(repo or ""), str(detector or ""), str(path or ""), canonical_line, canonical_commit)
 
-def iter_json(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Generator[Dict[str, Any], None, None]:
-    """Generator that yields parsed JSON objects, optionally filtered."""
+def iter_ndjson(path: str, verified_only: bool = False, exclude_regexes: Optional[List[re.Pattern]] = None) -> Generator[Dict[str, Any], None, None]:
+    """Generator that yields parsed NDJSON objects, optionally filtered."""
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return
     exclude_regexes = exclude_regexes or []
@@ -703,18 +720,25 @@ def iter_json(path: str, verified_only: bool = False, exclude_regexes: Optional[
                 if exclude_regexes and is_excluded(obj, exclude_regexes):
                     continue
                 yield obj
-            except json.JSONDecodeError:
+            except Exception:
                 continue
 
-def load_findings(json_path: str, exclude_regexes: List[re.Pattern]) -> Dict[str, List[Dict[str, Any]]]:
-    """Read JSON and return findings grouped by repo, filtered to Verified==True and not excluded, de-duped."""
+def load_findings(ndjson_path: str, exclude_regexes: List[re.Pattern], include_unverified: bool = False, allow_no_repo: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+    """Read NDJSON and return findings grouped by repo, filtered to Verified==True (or all if include_unverified) and not excluded, de-duped.
+    
+    If allow_no_repo is True, findings without repo metadata are grouped under '_filesystem_' (useful for filesystem scans with --target-repo).
+    """
     findings_by_repo: Dict[str, List[Dict[str, Any]]] = {}
     seen = set()
 
-    for obj in iter_json(json_path, verified_only=True, exclude_regexes=exclude_regexes):
+    verified_only = not include_unverified
+    for obj in iter_ndjson(ndjson_path, verified_only=verified_only, exclude_regexes=exclude_regexes):
         repo = sanitize_repo(find_repo(obj) or "")
         if not repo:
-            continue
+            if allow_no_repo:
+                repo = "_filesystem_"
+            else:
+                continue
 
         item = {
             "detector": obj.get("DetectorName") or obj.get("DetectorType") or "Unknown",
@@ -728,7 +752,8 @@ def load_findings(json_path: str, exclude_regexes: List[re.Pattern]) -> Dict[str
             seen.add(key)
             findings_by_repo.setdefault(repo, []).append(item)
 
-    logging.info("Loaded findings for %d repo(s) (verified and not excluded)", len(findings_by_repo))
+    mode = "verified and not excluded" if verified_only else "all (including unverified), not excluded"
+    logging.info("Loaded findings for %d repo(s) (%s)", len(findings_by_repo), mode)
     return findings_by_repo
 
 # ---------------------------- Diagnostics and summary ----------------------------
@@ -747,13 +772,13 @@ def _print_one_sanitized(o: Dict[str, Any], org: str) -> None:
     else:
         print(f"[{org}] {repo} | {det} | {shortpath(fpath)}:{ln_str} | verified={ver}")
 
-def print_sanitized_preview(json_path: str, org: str, max_lines: int,
+def print_sanitized_preview(ndjson_path: str, org: str, max_lines: int,
                             exclude_regexes: List[re.Pattern]) -> None:
     """Print up to N sanitized VERIFIED findings to stdout for quick inspection."""
     if max_lines <= 0:
         return
     shown = 0
-    for obj in iter_json(json_path, verified_only=True, exclude_regexes=exclude_regexes):
+    for obj in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
         if shown >= max_lines:
             break
         _print_one_sanitized(obj, org)
@@ -761,10 +786,10 @@ def print_sanitized_preview(json_path: str, org: str, max_lines: int,
     if shown > 0:
         logging.info("[%s] preview printed %d line(s)", org, shown)
 
-def json_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tuple[int, int, int, int]:
+def ndjson_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tuple[int, int, int, int]:
     total, bad, repos, dets = 0, 0, set(), set()
     if not os.path.exists(path):
-        logging.info("[%s] JSON not found: %s", org, path)
+        logging.info("[%s] NDJSON not found: %s", org, path)
         return (0, 0, 0, 0)
 
     with open(path, "r", encoding="utf-8") as f:
@@ -780,11 +805,11 @@ def json_stats(path: str, exclude_regexes: List[re.Pattern], org: str) -> Tuple[
                         repos.add(sanitize_repo(r))
                     if d := (o.get("DetectorName") or o.get("DetectorType")):
                         dets.add(str(d))
-            except json.JSONDecodeError:
+            except Exception:
                 bad += 1
     return (total, bad, len(repos), len(dets))
 
-def load_errors_json(path: Optional[str]) -> List[Dict[str, Any]]:
+def load_errors_ndjson(path: Optional[str]) -> List[Dict[str, Any]]:
     errs: List[Dict[str, Any]] = []
     if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
         return errs
@@ -797,11 +822,11 @@ def load_errors_json(path: Optional[str]) -> List[Dict[str, Any]]:
                 o = json.loads(line)
                 if isinstance(o, dict):
                     errs.append(o)
-            except json.JSONDecodeError:
+            except Exception:
                 continue
     return errs
 
-def write_markdown_summary(json_path: str,
+def write_markdown_summary(ndjson_path: str,
                            org: str,
                            exclude_regexes: List[re.Pattern],
                            include_detailed: bool = False,
@@ -820,7 +845,7 @@ def write_markdown_summary(json_path: str,
     per_repo_rows: Dict[str, List[Tuple[str, str, Optional[int], str]]] = {}
     total = 0
 
-    for o in iter_json(json_path, verified_only=True, exclude_regexes=exclude_regexes):
+    for o in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
         det = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
         repo = sanitize_repo(find_repo(o) or "")
         if not repo:
@@ -884,7 +909,7 @@ def write_markdown_summary(json_path: str,
             if remaining > 0:
                 content_lines.append(f"_... {remaining} more finding(s) omitted to keep the summary concise._\n\n")
 
-    errs = load_errors_json(errors_path)
+    errs = load_errors_ndjson(errors_path)
     if errs:
         content_lines.append("### API/Scan errors observed\n")
         content_lines.append("| Repo | Stage | Status | Message |\n|---|---|---:|---|\n")
@@ -944,8 +969,11 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
 
 def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
     count_text = "1 verified secret" if len(items) == 1 else f"{len(items)} verified secrets"
+    # Adjust text if using --include-unverified (items may be unverified)
+    if len(items) > 0 and items[0].get("original_repo"):
+        count_text = "1 finding" if len(items) == 1 else f"{len(items)} findings"
     header = [
-        "## Secret Detection Alert",
+        f"## Secret Detection Alert",
         "",
         f"**Status**: {count_text} found in this repository",
         f"**Scan**: [View workflow run]({run_url})" if run_url else "",
@@ -962,7 +990,9 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         path = it.get("file", "") or ""
         ln = it.get("line")
         sha = it.get("commit")
-        link_url = line_link(repo, sha, path, ln)
+        # Use original_repo for link if available (consolidation mode)
+        link_repo = it.get("original_repo") or repo
+        link_url = line_link(link_repo, sha, path, ln)
         ln_str = str(ln) if ln is not None else ""
 
         # Format link as markdown to make it clickable
@@ -1026,7 +1056,8 @@ def process_repo(repo: str,
                  run_url: str,
                  extra_labels: Optional[List[str]],
                  dry_run: bool,
-                 scanner_repo: str = "") -> Tuple[str, bool]:
+                 scanner_repo: str = "",
+                 force_create: bool = False) -> Tuple[str, bool]:
     logging.info("Processing repo %s with %d finding(s)", repo, len(items))
     meta = gh.repo_meta(repo)
     if not repo_is_actionable(meta):
@@ -1037,18 +1068,21 @@ def process_repo(repo: str,
     today = datetime.date.today().isoformat()
     title = f"{title_prefix} Secrets scan report - {today} ({findings_hash})"
 
-    # Check for exact match (same findings, same day)
-    if gh.search_issue_by_title(repo, title):
-        logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
-        return (repo, False)
+    if not force_create:
+        # Check for exact match (same findings, same day)
+        if gh.search_issue_by_title(repo, title):
+            logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
+            return (repo, False)
 
-    # Check for issues with same findings hash within last 90 days (open or closed)
-    # This prevents re-notifying about secrets that were already reported
-    title_pattern = f"{title_prefix} Secrets scan report"
-    hash_pattern = f"({findings_hash})"
-    if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=90):
-        logging.info("Issue already exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
-        return (repo, False)
+        # Check for issues with same findings hash within last 90 days (open or closed)
+        # This prevents re-notifying about secrets that were already reported
+        title_pattern = f"{title_prefix} Secrets scan report"
+        hash_pattern = f"({findings_hash})"
+        if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=90):
+            logging.info("Issue already exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
+            return (repo, False)
+    else:
+        logging.info("Force-create enabled, skipping deduplication checks")
 
     auto = labels_for_items(items, extra_labels)
     try:
@@ -1070,7 +1104,7 @@ def process_repo(repo: str,
 
 def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: int,
                           exclude_regexes: Optional[List[re.Pattern]] = None) -> None:
-    """Print quick diagnostics for per-repo JSON files."""
+    """Print quick diagnostics for per-repo NDJSON files."""
     if not diag_dir or not os.path.isdir(diag_dir):
         logging.info("[%s] diag dir not found: %s", org, diag_dir)
         return
@@ -1078,13 +1112,13 @@ def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: in
     printed = 0
     for root, _dirs, files in os.walk(diag_dir):
         for fn in sorted(files):
-            if not fn.endswith(".json") or printed >= max_files:
+            if not fn.endswith(".ndjson") or printed >= max_files:
                 continue
             path = os.path.join(root, fn)
             print(f"[{org}] diag file: {path} bytes={os.path.getsize(path)}")
 
             c = 0
-            for obj in iter_json(path):
+            for obj in iter_ndjson(path):
                 if c >= max_lines:
                     break
                 _print_one_sanitized(obj, org)
@@ -1095,7 +1129,7 @@ def diagnose_findings_dir(diag_dir: str, org: str, max_files: int, max_lines: in
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--json", default="findings.json")
+    p.add_argument("--ndjson", default="findings.ndjson")
     p.add_argument("--run-url", default="")
     p.add_argument("--scanner-repo", default="", help="GitHub repository with remediation docs (org/repo)")
     p.add_argument("--max-workers", type=int, default=0)
@@ -1121,8 +1155,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--summary-detailed-per-repo", type=int, default=10)
     p.add_argument("--summary-detailed-max", type=int, default=300)
 
-    # Errors JSON (optional)
-    p.add_argument("--errors-json", default=None)
+    # Errors NDJSON (optional)
+    p.add_argument("--errors-ndjson", default=None)
+
+    # Testing flags
+    p.add_argument("--include-unverified", action="store_true",
+                   help="Include unverified findings for issue creation (for testing only)")
+    p.add_argument("--target-repo", default=None,
+                   help="Override target repo for issue creation (for self-test, e.g. 'org/repo')")
+    p.add_argument("--force-create", action="store_true",
+                   help="Skip deduplication checks and always create issues (for testing only)")
     return p.parse_args()
 
 def main() -> int:
@@ -1139,39 +1181,39 @@ def main() -> int:
         except Exception as e:
             logging.warning("diagnose_findings_dir failed: %s", e)
 
-    # Optional preview for merged JSON (filtered by exclude patterns + Verified)
-    if os.path.exists(args.json):
+    # Optional preview for merged NDJSON (filtered by exclude patterns + Verified)
+    if os.path.exists(args.ndjson):
         try:
-            print_sanitized_preview(args.json, args.org, args.print_sanitized, exclude_regexes)
+            print_sanitized_preview(args.ndjson, args.org, args.print_sanitized, exclude_regexes)
         except Exception as e:
             logging.warning("Sanitized preview failed: %s", e)
 
     # Read-only validation stats
     if args.validate:
         try:
-            total, bad, repo_cnt, det_cnt = json_stats(args.json, exclude_regexes, args.org)
+            total, bad, repo_cnt, det_cnt = ndjson_stats(args.ndjson, exclude_regexes, args.org)
             logging.info("[%s] stats: lines=%d bad=%d unique_repos=%d unique_detectors=%d",
                          args.org, total, bad, repo_cnt, det_cnt)
         except Exception as e:
             logging.warning("validate stats failed: %s", e)
         return 0
 
-    # If this invocation is clearly diagnostics-only (no summary requested and no JSON), exit quietly.
-    if args.diag_dir and not args.write_summary and not os.path.exists(args.json):
-        logging.info("[%s] diagnostics-only run; no merged JSON to process", args.org)
+    # If this invocation is clearly diagnostics-only (no summary requested and no NDJSON), exit quietly.
+    if args.diag_dir and not args.write_summary and not os.path.exists(args.ndjson):
+        logging.info("[%s] diagnostics-only run; no merged NDJSON to process", args.org)
         return 0
 
     # Optional summary (still read-only)
-    if os.path.exists(args.json) and args.write_summary:
+    if os.path.exists(args.ndjson) and args.write_summary:
         try:
             write_markdown_summary(
-                args.json,
+                args.ndjson,
                 args.org,
                 exclude_regexes,
                 include_detailed=args.summary_detailed,
                 detailed_per_repo=max(1, args.summary_detailed_per_repo),
                 detailed_max_total=max(1, args.summary_detailed_max),
-                errors_path=args.errors_json
+                errors_path=args.errors_ndjson
             )
         except Exception as e:
             logging.warning("Summary generation failed: %s", e)
@@ -1180,23 +1222,39 @@ def main() -> int:
         token = get_auth_token()
     except ValueError as e:
         logging.info("Skipping issue creation: %s", e)
-        return 0
+        return 0 if os.path.exists(args.ndjson) else 0
 
-    findings = load_findings(args.json, exclude_regexes)
+    # Allow findings without repo metadata when --target-repo is specified (e.g., filesystem scans)
+    allow_no_repo = bool(args.target_repo)
+    findings = load_findings(args.ndjson, exclude_regexes, include_unverified=args.include_unverified, allow_no_repo=allow_no_repo)
     if not findings:
-        logging.info("No verified findings detected after filtering; no issues created")
+        if args.include_unverified:
+            logging.info("No findings detected after filtering; no issues created")
+        else:
+            logging.info("No verified findings detected after filtering; no issues created")
         return 0
 
     gh = GHClient(token=token, dry_run=args.dry_run)
     extra_labels = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
     max_workers = args.max_workers or max(1, min(8, (os.cpu_count() or 2) * 2))
 
+    # If --target-repo is set, consolidate all findings into a single issue for that repo
+    if args.target_repo:
+        all_items = []
+        for repo, items in findings.items():
+            # Annotate each item with its original repo for the issue body
+            for item in items:
+                item["original_repo"] = repo
+            all_items.extend(items)
+        findings = {args.target_repo: all_items}
+        logging.info("Using target-repo override: %s (consolidated %d findings)", args.target_repo, len(all_items))
+
     created_count = 0
     with cf.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="issue") as pool:
         futures = []
         for repo, items in findings.items():
             futures.append(pool.submit(
-                process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run, args.scanner_repo
+                process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run, args.scanner_repo, args.force_create
             ))
         for fut in cf.as_completed(futures):
             try:

@@ -1,0 +1,47 @@
+# Sample .env file for TruffleHog testing
+# These are FAKE credentials - never valid, for testing only
+
+# AWS Configuration
+AWS_ACCESS_KEY_ID=AKIAIOSFODNNTESTKEY
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYTESTKEY123
+
+# Azure Configuration  
+AZURE_CLIENT_SECRET=abc123DEF456ghi789JKL012mno345PQR678stu9
+
+# GitHub Tokens
+GITHUB_TOKEN=ghp_ABCDEFghijkl1234567890mnopqrstuVWXYZ
+GH_PAT=github_pat_22ABCDEFGHIJKLMNOPQRS_1234567890abcdefghijklmnopqrstuvwxyzABCDEFG
+
+# Slack Credentials
+SLACK_TOKEN=xoxb-123456789012-1234567890123-ABCDEFGHIJKLMNOPqrstuv
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/TABCDEFG/BHJIKLMNO/aBcDeFgHiJkLmNoPqRsTuVwX
+
+# Database URLs
+DATABASE_URL=postgres://user:P@ssw0rd123456@db.example.com:5432/production
+REDIS_URL=redis://:SuperSecretRedisPass@redis.prod.example.com:6379/0
+MONGODB_URI=mongodb://admin:SecureM0ng0Pass!@mongo.example.com:27017/app
+
+# Payment Processing
+STRIPE_SECRET_KEY=sk_live_51ABCDefGHIjklMNOpqrSTUvwXYZ0123456789abc
+STRIPE_PUBLISHABLE_KEY=pk_live_51ABCDefGHIjklMNOpqrSTUvwXYZ0123456
+
+# Email Services
+SENDGRID_API_KEY=SG.aBcDeFgHiJkLmNoP.qRsTuVwXyZ1234567890ABCDEFGHIJKLMNOPQRSTUV
+MAILGUN_API_KEY=key-1234567890abcdefghijklmnopqrstuv
+
+# SMS/Communication
+TWILIO_ACCOUNT_SID=AC12345678901234567890123456789012
+TWILIO_AUTH_TOKEN=abcdef1234567890abcdef1234567890
+
+# AI/ML APIs
+OPENAI_API_KEY=sk-ABCDEFghijklMNOPqrst1234567890uvwxyzABCDEFGH
+ANTHROPIC_API_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop
+
+# Docker Hub
+DOCKER_PASSWORD=dckr_pat_ABCDEF1234567890ghijklmnop
+
+# NPM Token  
+NPM_TOKEN=npm_1234567890abcdefghijklmnopqrstuvwxyz
+
+# Heroku
+HEROKU_API_KEY=abcdef12-3456-7890-abcd-ef1234567890

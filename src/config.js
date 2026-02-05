@@ -1,13 +1,5 @@
-// ===================================================================
-// TEST DATA - NOT REAL CREDENTIALS
-// ===================================================================
-// This file contains intentional fake secrets for TruffleHog testing.
-// These credentials have never been valid and pose no security risk.
-// See TEST_FIXTURES.md for more information.
-// ===================================================================
-
-// Production Configuration (TEST FIXTURE)
-// WARNING: These are fake credentials for testing secret detection
+// Production Configuration
+// WARNING: This file contains sensitive credentials
 
 const config = {
   environment: 'production',

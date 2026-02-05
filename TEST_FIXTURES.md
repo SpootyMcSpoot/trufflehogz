@@ -86,7 +86,7 @@ GITHUB_TOKEN=ghp_exampleTokenString1234567890abcdefghi
 DATABASE_URL=postgresql://user:password@localhost:5432/database
 ```
 
-**Status**: ✅ Clearly marked as examples in filename
+**Status**: OK - Clearly marked as examples in filename
 
 ---
 
@@ -99,7 +99,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 - Staging PostgreSQL password: `St@g1ng_P@ssw0rd_123`
 - Redis passwords with special characters
 
-**Status**: ⚠️ **Should add `# TEST DATA` comment at top of file**
+**Status**: NEEDS ATTENTION - **Should add `# TEST DATA` comment at top of file**
 
 ---
 
@@ -115,7 +115,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 - JWT secret
 - SendGrid API key
 
-**Status**: ⚠️ **Should add `# TEST DATA` comment at top of file**
+**Status**: NEEDS ATTENTION - **Should add `# TEST DATA` comment at top of file**
 
 ---
 
@@ -129,7 +129,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 - JWT secrets
 - Third-party service credentials
 
-**Status**: ⚠️ **Should add `// TEST DATA` comment at top of file**
+**Status**: NEEDS ATTENTION - **Should add `// TEST DATA` comment at top of file**
 
 ---
 
@@ -142,7 +142,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 - Database password as variable default
 - GitHub token as default variable
 
-**Status**: ⚠️ **Should add `# TEST DATA` comment at top of file**
+**Status**: NEEDS ATTENTION - **Should add `# TEST DATA` comment at top of file**
 
 ---
 
@@ -156,7 +156,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 - API keys
 - Service tokens
 
-**Status**: ✅ Clear from directory name (`test/`) that this is test data
+**Status**: OK - Clear from directory name (`test/`) that this is test data
 
 ---
 
@@ -167,7 +167,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 **Contains**:
 - Partial RSA private key (intentionally incomplete to avoid false positives)
 
-**Status**: ⚠️ **Should add comment at top explaining this is test data**
+**Status**: NEEDS ATTENTION - **Should add comment at top explaining this is test data**
 
 ---
 
@@ -180,7 +180,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 - Database connection URLs
 - Service credentials
 
-**Status**: ⚠️ **Should add `# TEST DATA` comment at top of file**
+**Status**: NEEDS ATTENTION - **Should add `# TEST DATA` comment at top of file**
 
 ## Recommendations for Clarity
 

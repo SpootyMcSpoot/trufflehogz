@@ -1,5 +1,4 @@
 {
-  "_testdata_warning": "TEST DATA - NOT REAL CREDENTIALS. This file contains intentional fake secrets for TruffleHog testing. See TEST_FIXTURES.md for more information.",
   "testEnvironment": "production-replica",
   "credentials": {
     "aws": {

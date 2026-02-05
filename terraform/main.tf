@@ -1,11 +1,3 @@
-# ===================================================================
-# TEST DATA - NOT REAL CREDENTIALS
-# ===================================================================
-# This file contains intentional fake secrets for TruffleHog testing.
-# These credentials have never been valid and pose no security risk.
-# See TEST_FIXTURES.md for more information.
-# ===================================================================
-
 terraform {
   required_version = ">= 1.0"
 

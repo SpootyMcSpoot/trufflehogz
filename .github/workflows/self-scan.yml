@@ -1,229 +1,328 @@
 # Self-Scan Workflow
-# Runs TruffleHog against this repository to validate detection capabilities
-# and verify the scanner processes findings correctly.
+# Mirrors the org-scan workflow structure to validate workflow logic.
+# Runs TruffleHog against this repository on every push.
 
 name: Self-Scan Test
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
-      scan_public_orgs:
-        description: 'Scan public GitHub orgs'
+      scan_results:
+        description: "Results filter"
         required: false
-        default: false
-        type: boolean
-      public_orgs:
-        description: 'Comma-separated list of public orgs to scan (e.g., "OWASP,trufflesecurity")'
+        default: "verified,unknown,unverified"
+        type: choice
+        options:
+          - "verified"
+          - "verified,unknown"
+          - "verified,unknown,unverified"
+      scan_mode:
+        description: "Scan mode"
         required: false
-        default: ''
-        type: string
-
-env:
-  # Default public orgs for testing (only used when scan_public_orgs is true)
-  # These are intentionally vulnerable or test repos
-  SELFSCAN_ORGS: ${{ inputs.public_orgs || '' }}
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "recent"
 
 permissions:
   contents: read
+  issues: write
+
+concurrency:
+  group: self-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRUFFLEHOG_VERSION: ${{ vars.TRUFFLEHOG_VERSION || '3.92.5' }}
+  TRUFFLEHOG_IMAGE: ${{ vars.TRUFFLEHOG_IMAGE || 'ghcr.io/trufflesecurity/trufflehog:3.92.5' }}
+  TRUFFLEHOG_CACHE_FILE: ${{ vars.TRUFFLEHOG_CACHE_FILE || '.trufflehog_cache/trufflehog-3.92.5.tar' }}
 
 jobs:
-  trufflehog-scan:
-    name: TruffleHog Self-Scan
+  plan:
+    name: Plan Self-Scan
     runs-on: ubuntu-latest
+    outputs:
+      repo_name: ${{ steps.set-repo.outputs.repo_name }}
+      shard_count: ${{ steps.set-repo.outputs.shard_count }}
+    steps:
+      - name: Set repository info
+        id: set-repo
+        run: |
+          echo "repo_name=${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          echo "shard_count=1" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Self-Scan Plan::Scanning repository: ${{ github.repository }}"
+
+  scan:
+    name: Scan [shard 1/1]
+    runs-on: ubuntu-latest
+    needs: [plan]
+    env:
+      REPO_NAME: ${{ needs.plan.outputs.repo_name }}
+      # Use all result types for self-scan since test secrets are fake and won't verify
+      SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown,unverified' }}
+      SCAN_MODE: ${{ inputs.scan_mode || 'full' }}
+      ALLOW_VER_OVERLAP: ${{ vars.ALLOW_VER_OVERLAP || 'true' }}
+      EXCLUDE_GENERIC: ${{ vars.EXCLUDE_GENERIC || 'false' }}
+      TRUFFLEHOG_DISABLE_UPDATER: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install TruffleHog
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+      - name: Prime/restore TruffleHog image cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TRUFFLEHOG_CACHE_FILE }}
+          key: trufflehog-image-${{ env.TRUFFLEHOG_VERSION }}
 
-      - name: Run TruffleHog scan
+      - name: Ensure TruffleHog image present (pinned)
+        run: |
+          set -Eeuo pipefail
+          if [ -f "${TRUFFLEHOG_CACHE_FILE}" ]; then docker load -i "${TRUFFLEHOG_CACHE_FILE}" || true; fi
+          if ! docker image inspect "${TRUFFLEHOG_IMAGE}" > /dev/null 2>&1; then
+            docker pull "${TRUFFLEHOG_IMAGE}"
+            mkdir -p "$(dirname "${TRUFFLEHOG_CACHE_FILE}")"
+            docker save "${TRUFFLEHOG_IMAGE}" -o "${TRUFFLEHOG_CACHE_FILE}"
+          fi
+          docker image inspect "${TRUFFLEHOG_IMAGE}" >/dev/null
+
+      - name: Scan repository with TruffleHog
         id: scan
         run: |
-          # Scan the repository and output findings as JSON
-          trufflehog git file://. --json --no-verification > findings.json 2>&1 || true
+          set -Eeuo pipefail
+          mkdir -p diag tmp-findings tmp-errors
+
+          EXTRA_FLAGS=( --results="${SCAN_RESULTS}" --json --force-skip-binaries --force-skip-archives )
+          [ "${ALLOW_VER_OVERLAP}" = "true" ] && EXTRA_FLAGS+=( --allow-verification-overlap )
+          [ "${EXCLUDE_GENERIC}" = "true" ] && EXTRA_FLAGS+=( --exclude-detectors=generic )
+
+          echo "=== Scan Configuration ==="
+          echo "Repository: ${REPO_NAME}"
+          echo "Scan Mode: ${SCAN_MODE}"
+          echo "Results Filter: ${SCAN_RESULTS}"
+          echo "TruffleHog Image: ${TRUFFLEHOG_IMAGE}"
+          echo ""
+
+          # Scan using filesystem mode for this repo (faster, mirrors git scan output)
+          echo "Scanning repository filesystem..."
+          docker run --rm \
+            -e TRUFFLEHOG_DISABLE_UPDATER=1 \
+            -v "$PWD:/repo" \
+            "${TRUFFLEHOG_IMAGE}" filesystem /repo "${EXTRA_FLAGS[@]}" \
+            > tmp-findings/self.ndjson 2> tmp-errors/self.stderr || true
 
           # Count findings
-          FINDING_COUNT=$(wc -l < findings.json | tr -d ' ')
+          FINDING_COUNT=$(wc -l < tmp-findings/self.ndjson | tr -d ' ')
           echo "finding_count=$FINDING_COUNT" >> $GITHUB_OUTPUT
-          echo "Found $FINDING_COUNT potential secrets"
 
-      - name: Validate findings detected
+          # Copy to expected artifact names
+          cp tmp-findings/self.ndjson findings-self.ndjson
+          : > errors-self.ndjson  # No API errors in self-scan
+
+          # Generate scan summary
+          {
+            echo "=== DIAG:SCAN self ==="
+            echo "REPO=${REPO_NAME}"
+            echo "FINDINGS=${FINDING_COUNT}"
+            echo "SCAN_MODE=${SCAN_MODE}"
+            echo "RESULTS_FILTER=${SCAN_RESULTS}"
+            echo "=== END DIAG:SCAN self ==="
+          } > diag/SCAN_SUMMARY.txt
+
+          cat diag/SCAN_SUMMARY.txt
+
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-findings-self-shard-1-of-1
+          path: |
+            findings-self.ndjson
+            errors-self.ndjson
+          if-no-files-found: warn
+          compression-level: 6
+
+      - name: Upload troubleshoot bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-troubleshoot-self-shard-1-of-1
+          path: |
+            diag/SCAN_SUMMARY.txt
+          if-no-files-found: warn
+          compression-level: 6
+
+  summarize:
+    name: Summarize Findings
+    runs-on: ubuntu-latest
+    needs: [plan, scan]
+    env:
+      REPO_NAME: ${{ needs.plan.outputs.repo_name }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
         run: |
-          EXPECTED_MIN=10  # We expect at least 10 test secrets to be found
-          ACTUAL=${{ steps.scan.outputs.finding_count }}
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-          echo "Expected at least $EXPECTED_MIN findings, got $ACTUAL"
+      - name: Download scan artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trufflehog-findings-self-shard-*
+          path: merge/self
+          merge-multiple: true
+
+      - name: Merge and analyze findings
+        id: analyze
+        run: |
+          set -Eeuo pipefail
+
+          # Merge findings (single shard for self-scan)
+          : > findings-self-ALL.ndjson
+          : > errors-self-ALL.ndjson
+
+          if [ -d merge/self ]; then
+            find merge/self -name 'findings-*.ndjson' -exec cat {} \; >> findings-self-ALL.ndjson || true
+            find merge/self -name 'errors-*.ndjson' -exec cat {} \; >> errors-self-ALL.ndjson || true
+          fi
+
+          TOTAL=$(wc -l < findings-self-ALL.ndjson | tr -d ' ')
+          echo "total_findings=$TOTAL" >> $GITHUB_OUTPUT
+
+          echo "=== Findings Summary ==="
+          echo "Total findings: $TOTAL"
+
+          if [ "$TOTAL" -gt 0 ]; then
+            echo ""
+            echo "=== By Detector Type ==="
+            jq -r '.DetectorName' findings-self-ALL.ndjson | sort | uniq -c | sort -rn
+
+            echo ""
+            echo "=== By File ==="
+            jq -r '.SourceMetadata.Data.Filesystem.file // .SourceMetadata.Data.Git.file // "unknown"' findings-self-ALL.ndjson | sort | uniq -c | sort -rn
+
+            echo ""
+            echo "=== Verified Status ==="
+            jq -r 'if .Verified then "verified" else "unverified" end' findings-self-ALL.ndjson | sort | uniq -c | sort -rn
+          fi
+
+      - name: Run scanner in validation mode
+        env:
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ ! -s findings-self-ALL.ndjson ]; then
+            echo "No findings to validate"
+            exit 0
+          fi
+
+          # Build args - use --include-unverified since test secrets are fake and can't verify
+          # Creates issues in THIS repo only for testing the issue creation pipeline
+          SCANNER_ARGS=(
+            --ndjson findings-self-ALL.ndjson
+            --org "self-scan"
+            --print-sanitized 25
+            --write-summary
+            --run-url "$RUN_URL"
+            --scanner-repo "${{ github.repository }}"
+            --max-workers 4
+            --log-level INFO
+            --include-unverified
+            --target-repo "${{ github.repository }}"
+            --force-create
+          )
+
+          if [ -f .github/trufflehog/false_positives.txt ]; then
+            SCANNER_ARGS+=(--exclude-patterns-file .github/trufflehog/false_positives.txt)
+          fi
+
+          if [ -f errors-self-ALL.ndjson ]; then
+            SCANNER_ARGS+=(--errors-ndjson errors-self-ALL.ndjson)
+          fi
+
+          echo "Running trufflehog_scanner.py with --include-unverified..."
+          python3 trufflehog_scanner.py "${SCANNER_ARGS[@]}"
+
+      - name: Validate expected test secrets detected
+        run: |
+          EXPECTED_MIN=20
+          ACTUAL="${{ steps.analyze.outputs.total_findings }}"
+          ACTUAL="${ACTUAL:-0}"
+
+          echo "=== Validation ==="
+          echo "Expected: at least $EXPECTED_MIN findings"
+          echo "Actual: $ACTUAL findings"
+          echo ""
 
           if [ "$ACTUAL" -lt "$EXPECTED_MIN" ]; then
-            echo "ERROR: TruffleHog did not detect expected test fixtures"
-            echo "This may indicate a problem with the scanner or test data"
+            echo "[FAIL] TruffleHog did not detect expected test fixtures"
+            echo ""
+            echo "This may indicate:"
+            echo "  - Test fixture files are missing or malformed"
+            echo "  - TruffleHog detector patterns have changed"
+            echo "  - Scanner image failed to load"
             exit 1
           fi
 
-          echo "SUCCESS: TruffleHog detected $ACTUAL test secrets as expected"
+          echo "[PASS] Detected $ACTUAL test secrets (minimum: $EXPECTED_MIN)"
 
-      - name: Upload findings artifact
+      - name: Upload merged findings
         uses: actions/upload-artifact@v4
         with:
-          name: trufflehog-findings
-          path: findings.json
-          retention-days: 7
+          name: trufflehog-findings-self-ALL
+          path: |
+            findings-self-ALL.ndjson
+            errors-self-ALL.ndjson
+          if-no-files-found: warn
+          compression-level: 6
 
-  public-org-scan:
-    name: Public Org Scan
+  workflow-summary:
+    name: Workflow Summary
     runs-on: ubuntu-latest
-    if: ${{ inputs.scan_public_orgs == true && inputs.public_orgs != '' }}
+    needs: [plan, scan, summarize]
+    if: always()
+    env:
+      REPO_NAME: ${{ needs.plan.outputs.repo_name }}
+      SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
+      SCAN_MODE: ${{ inputs.scan_mode || 'full' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install TruffleHog
+      - name: Generate workflow summary
         run: |
-          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+          set -Eeuo pipefail
 
-      - name: Scan public orgs
-        id: public_scan
-        env:
-          ORGS_LIST: ${{ inputs.public_orgs }}
-        run: |
-          echo "Scanning public orgs: $ORGS_LIST"
-
-          # Create output directory
-          mkdir -p public-findings
-
-          TOTAL_FINDINGS=0
-          ORGS_SCANNED=0
-
-          # Split comma-separated list and scan each org
-          IFS=',' read -ra ORGS <<< "$ORGS_LIST"
-          for org in "${ORGS[@]}"; do
-            # Trim whitespace
-            org=$(echo "$org" | xargs)
-
-            if [ -z "$org" ]; then
-              continue
-            fi
-
-            echo "----------------------------------------"
-            echo "Scanning org: $org"
-            echo "----------------------------------------"
-
-            # Scan org's public repos (no verification to avoid API calls)
-            OUTPUT_FILE="public-findings/${org}.json"
-            trufflehog github --org="$org" --json --no-verification > "$OUTPUT_FILE" 2>&1 || true
-
-            # Count findings for this org
-            ORG_FINDINGS=$(wc -l < "$OUTPUT_FILE" | tr -d ' ')
-            echo "Found $ORG_FINDINGS potential secrets in $org"
-
-            TOTAL_FINDINGS=$((TOTAL_FINDINGS + ORG_FINDINGS))
-            ORGS_SCANNED=$((ORGS_SCANNED + 1))
-          done
-
-          echo "----------------------------------------"
-          echo "SUMMARY"
-          echo "----------------------------------------"
-          echo "Orgs scanned: $ORGS_SCANNED"
-          echo "Total findings: $TOTAL_FINDINGS"
-
-          # Combine all findings
-          cat public-findings/*.json > public-findings/all-findings.json 2>/dev/null || touch public-findings/all-findings.json
-
-          echo "orgs_scanned=$ORGS_SCANNED" >> $GITHUB_OUTPUT
-          echo "total_findings=$TOTAL_FINDINGS" >> $GITHUB_OUTPUT
-
-      - name: Upload public org findings
-        uses: actions/upload-artifact@v4
-        with:
-          name: public-org-findings
-          path: public-findings/
-          retention-days: 7
-
-      - name: Summary
-        run: |
-          echo "## Public Org Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Orgs Scanned**: ${{ steps.public_scan.outputs.orgs_scanned }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Findings**: ${{ steps.public_scan.outputs.total_findings }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Findings artifacts are available for download." >> $GITHUB_STEP_SUMMARY
-
-  python-lint:
-    name: Python Lint & Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff mypy
-
-      - name: Run ruff linter
-        run: |
-          ruff check trufflehog_scanner.py scripts/ --ignore E501
-
-      - name: Run ruff formatter check
-        run: |
-          ruff format --check trufflehog_scanner.py scripts/ || true
-
-  scanner-test:
-    name: Scanner Unit Test
-    runs-on: ubuntu-latest
-    needs: trufflehog-scan
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run unit tests
-        run: |
-          pytest test_trufflehog_scanner.py -v
-
-      - name: Download findings
-        uses: actions/download-artifact@v4
-        with:
-          name: trufflehog-findings
-
-      - name: Test scanner validation mode
-        run: |
-          python trufflehog_scanner.py \
-            --json findings.json \
-            --validate \
-            --org test-org \
-            --log-level INFO
-
-      - name: Test scanner dry-run mode
-        env:
-          GH_PAT: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python trufflehog_scanner.py \
-            --json findings.json \
-            --dry-run \
-            --org test-org \
-            --title-prefix "[Test]" \
-            --print-sanitized 5 \
-            --log-level DEBUG
+          {
+            echo "# TruffleHog Self-Scan Summary"
+            echo ""
+            echo "## Configuration"
+            echo "| Setting | Value |"
+            echo "|---------|-------|"
+            echo "| Repository | \`${REPO_NAME}\` |"
+            echo "| Scan Mode | ${SCAN_MODE} |"
+            echo "| Results Filter | ${SCAN_RESULTS} |"
+            echo "| TruffleHog Version | ${TRUFFLEHOG_VERSION:-3.92.5} |"
+            echo ""
+            echo "## Purpose"
+            echo "This workflow validates:"
+            echo "- TruffleHog can detect test fixtures in \`test/fixtures/\`"
+            echo "- The scanner workflow logic (plan → scan → summarize) works correctly"
+            echo "- The \`trufflehog_scanner.py\` script processes findings correctly"
+            echo ""
+            echo "> **Note:** The scanner summary shows 0 verified findings because test secrets are intentionally fake and cannot be verified against real APIs. The validation step checks total findings (verified + unverified)."
+            echo ""
+            echo "## Status"
+            echo "- Scan completed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "- Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"

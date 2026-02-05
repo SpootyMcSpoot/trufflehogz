@@ -210,7 +210,7 @@ flowchart TD
     ScanOrg2 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
     ScanOrg3 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
 
-    Summarize[4. summarize-org per org<br/>Download all shard artifacts<br/>Merge JSON files<br/>Filter false positives<br/>Generate summary<br/>Create issues optional]
+    Summarize[4. summarize-org per org<br/>Download all shard artifacts<br/>Merge NDJSON files<br/>Filter false positives<br/>Generate summary<br/>Create issues optional]
 
     Summarize --> WorkflowSummary[5. workflow-summary<br/>Show configuration used<br/>Display performance metrics<br/>Link to per-org summaries]
 
@@ -256,7 +256,7 @@ See **[REMEDIATION.md](REMEDIATION.md)** for complete guide with git-filter-repo
 **Local Testing**:
 ```bash
 # Test scanner
-python3 trufflehog_scanner.py --json findings.json --org test-org --dry-run
+python3 trufflehog_scanner.py --ndjson findings.ndjson --org test-org --dry-run
 
 # Generate test data
 docker run --rm -v "$PWD:/work" ghcr.io/trufflesecurity/trufflehog:3.90.6 \

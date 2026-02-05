@@ -29,7 +29,7 @@ from trufflehog_scanner import (
     make_finding_key,
     compose_match_string,
     is_excluded,
-    iter_json,
+    iter_ndjson,
     compute_findings_hash,
     RateLimiter,
 )
@@ -155,6 +155,19 @@ class TestFindRepo:
             }
         }
         assert find_repo(obj) == "owner/repo"
+
+    def test_github_lowercase_source_metadata(self):
+        """TruffleHog uses 'Github' (lowercase h) in its output."""
+        obj = {
+            "SourceMetadata": {
+                "Data": {
+                    "Github": {
+                        "repository": "https://github.com/trufflesecurity/test_keys.git"
+                    }
+                }
+            }
+        }
+        assert find_repo(obj) == "trufflesecurity/test_keys"
 
     def test_fallback_to_url_pattern(self):
         obj = {"Raw": "found at https://github.com/found/here/blob/main/file.py"}
@@ -369,16 +382,16 @@ class TestIsExcluded:
         assert is_excluded(obj, []) is False
 
 
-class TestIterJson:
-    """Tests for iter_json generator function."""
+class TestIterNdjson:
+    """Tests for iter_ndjson generator function."""
 
-    def test_reads_json_lines(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    def test_reads_ndjson_lines(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.ndjson', delete=False) as f:
             f.write('{"key": "value1"}\n')
             f.write('{"key": "value2"}\n')
             f.name
         try:
-            results = list(iter_json(f.name))
+            results = list(iter_ndjson(f.name))
             assert len(results) == 2
             assert results[0]["key"] == "value1"
             assert results[1]["key"] == "value2"
@@ -386,32 +399,32 @@ class TestIterJson:
             os.unlink(f.name)
 
     def test_skips_invalid_json(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.ndjson', delete=False) as f:
             f.write('{"valid": true}\n')
             f.write('not valid json\n')
             f.write('{"also_valid": true}\n')
             f.name
         try:
-            results = list(iter_json(f.name))
+            results = list(iter_ndjson(f.name))
             assert len(results) == 2
         finally:
             os.unlink(f.name)
 
     def test_verified_only_filter(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.ndjson', delete=False) as f:
             f.write('{"Verified": true, "id": 1}\n')
             f.write('{"Verified": false, "id": 2}\n')
             f.write('{"id": 3}\n')
             f.name
         try:
-            results = list(iter_json(f.name, verified_only=True))
+            results = list(iter_ndjson(f.name, verified_only=True))
             assert len(results) == 1
             assert results[0]["id"] == 1
         finally:
             os.unlink(f.name)
 
     def test_nonexistent_file_yields_nothing(self):
-        results = list(iter_json("/nonexistent/path/file.json"))
+        results = list(iter_ndjson("/nonexistent/path/file.ndjson"))
         assert results == []
 
 
@@ -460,6 +473,261 @@ class TestRateLimiter:
         # Should handle negative rate gracefully
         limiter = RateLimiter(calls_per_sec=-5.0)
         assert limiter.interval > 0
+
+
+# Import GHClient for integration tests
+from trufflehog_scanner import GHClient
+
+
+class TestGHClient:
+    """Integration tests for GHClient GitHub API wrapper."""
+
+    def test_dry_run_mode_does_not_call_api(self):
+        """Dry run mode should not make actual API calls."""
+        client = GHClient(token="fake-token", dry_run=True)
+        # In dry run, POST/PUT/PATCH/DELETE should return empty dict
+        result = client.request("POST", "/repos/test/test/issues", {"title": "test"})
+        assert result == {}
+
+    def test_dry_run_get_returns_empty_list(self):
+        """Dry run GET requests should return empty list."""
+        client = GHClient(token="fake-token", dry_run=True)
+        result = client.request("GET", "/repos/test/test/issues", None)
+        assert result == []
+
+    @mock.patch('trufflehog_scanner.urlopen')
+    def test_successful_api_call(self, mock_urlopen):
+        """Test successful API call parsing."""
+        mock_response = mock.MagicMock()
+        mock_response.read.return_value = b'{"id": 123, "title": "test issue"}'
+        mock_response.status = 200
+        mock_response.__enter__ = mock.MagicMock(return_value=mock_response)
+        mock_response.__exit__ = mock.MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.call("GET", "/repos/owner/repo/issues/1", None)
+        
+        assert result["id"] == 123
+        assert result["title"] == "test issue"
+
+    @mock.patch('trufflehog_scanner.urlopen')
+    def test_http_error_raises(self, mock_urlopen):
+        """Test that HTTP errors are raised after retries exhausted."""
+        from urllib.error import HTTPError
+        mock_urlopen.side_effect = HTTPError(
+            url="https://api.github.com/test",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=None
+        )
+
+        client = GHClient(token="fake-token", dry_run=False, max_retries=1)
+        with pytest.raises(HTTPError):
+            client.call("GET", "/repos/owner/nonexistent", None)
+
+    @mock.patch('trufflehog_scanner.urlopen')
+    def test_rate_limit_retry(self, mock_urlopen):
+        """Test that rate limit (403) triggers retry with backoff."""
+        from urllib.error import HTTPError
+        
+        # First call: rate limited, second call: success
+        mock_response = mock.MagicMock()
+        mock_response.read.return_value = b'{"success": true}'
+        mock_response.status = 200
+        mock_response.__enter__ = mock.MagicMock(return_value=mock_response)
+        mock_response.__exit__ = mock.MagicMock(return_value=False)
+        
+        rate_limit_error = HTTPError(
+            url="https://api.github.com/test",
+            code=403,
+            msg="Rate limited",
+            hdrs={},
+            fp=None
+        )
+        
+        mock_urlopen.side_effect = [rate_limit_error, mock_response]
+
+        client = GHClient(token="fake-token", dry_run=False, max_retries=3)
+        result = client.call("GET", "/repos/owner/repo", None)
+        
+        assert result["success"] is True
+        assert mock_urlopen.call_count == 2
+
+    def test_search_issue_by_title_dry_run(self):
+        """Test search_issue_by_title in dry run mode."""
+        client = GHClient(token="fake-token", dry_run=True)
+        # Dry run should return False (no issue found)
+        result = client.search_issue_by_title("owner/repo", "Test Issue")
+        assert result is False
+
+    def test_search_recent_issues_dry_run(self):
+        """Test search_recent_issues in dry run mode."""
+        client = GHClient(token="fake-token", dry_run=True)
+        result = client.search_recent_issues("owner/repo", "[TruffleHog]")
+        assert result is False
+
+    def test_search_recent_issues_with_hash_dry_run(self):
+        """Test search_recent_issues_with_hash in dry run mode."""
+        client = GHClient(token="fake-token", dry_run=True)
+        result = client.search_recent_issues_with_hash("owner/repo", "[TruffleHog]", "abc123")
+        assert result is False
+
+    @mock.patch('trufflehog_scanner.urlopen')
+    def test_create_issue_returns_url(self, mock_urlopen):
+        """Test that create_issue returns the issue URL."""
+        mock_response = mock.MagicMock()
+        mock_response.read.return_value = b'{"html_url": "https://github.com/owner/repo/issues/42", "number": 42}'
+        mock_response.status = 201
+        mock_response.__enter__ = mock.MagicMock(return_value=mock_response)
+        mock_response.__exit__ = mock.MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        client = GHClient(token="fake-token", dry_run=False)
+        url = client.create_issue("owner/repo", "Test Title", "Test Body", ["bug"])
+        
+        assert url == "https://github.com/owner/repo/issues/42"
+
+    @mock.patch('trufflehog_scanner.urlopen')
+    def test_repo_meta_returns_metadata(self, mock_urlopen):
+        """Test that repo_meta returns repository metadata."""
+        mock_response = mock.MagicMock()
+        mock_response.read.return_value = b'{"archived": false, "disabled": false, "full_name": "owner/repo"}'
+        mock_response.status = 200
+        mock_response.__enter__ = mock.MagicMock(return_value=mock_response)
+        mock_response.__exit__ = mock.MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        client = GHClient(token="fake-token", dry_run=False)
+        meta = client.repo_meta("owner/repo")
+        
+        assert meta["archived"] is False
+        assert meta["full_name"] == "owner/repo"
+
+    def test_repo_meta_dry_run_returns_empty(self):
+        """Test that repo_meta in dry run returns empty dict."""
+        client = GHClient(token="fake-token", dry_run=True)
+        meta = client.repo_meta("owner/repo")
+        assert meta == {}
+
+
+class TestProcessRepo:
+    """Integration tests for process_repo function."""
+
+    @mock.patch.object(GHClient, 'repo_meta')
+    @mock.patch.object(GHClient, 'search_issue_by_title')
+    @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
+    @mock.patch.object(GHClient, 'create_issue')
+    @mock.patch.object(GHClient, 'ensure_labels')
+    def test_process_repo_creates_issue(self, mock_labels, mock_create, mock_hash_search, 
+                                         mock_title_search, mock_meta):
+        """Test that process_repo creates an issue when none exists."""
+        from trufflehog_scanner import process_repo
+        
+        mock_meta.return_value = {"archived": False, "disabled": False}
+        mock_title_search.return_value = False
+        mock_hash_search.return_value = False
+        mock_create.return_value = "https://github.com/owner/repo/issues/1"
+        mock_labels.return_value = None
+
+        client = GHClient(token="fake-token", dry_run=False)
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
+        
+        repo, created = process_repo(
+            gh=client,
+            repo="owner/repo",
+            items=items,
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            title_prefix="[TruffleHog]",
+            extra_labels=[]
+        )
+        
+        assert repo == "owner/repo"
+        assert created is True
+        mock_create.assert_called_once()
+
+    @mock.patch.object(GHClient, 'repo_meta')
+    @mock.patch.object(GHClient, 'search_issue_by_title')
+    def test_process_repo_skips_existing_issue(self, mock_title_search, mock_meta):
+        """Test that process_repo skips when issue already exists."""
+        from trufflehog_scanner import process_repo
+        
+        mock_meta.return_value = {"archived": False, "disabled": False}
+        mock_title_search.return_value = True  # Issue exists
+
+        client = GHClient(token="fake-token", dry_run=False)
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
+        
+        repo, created = process_repo(
+            gh=client,
+            repo="owner/repo",
+            items=items,
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            title_prefix="[TruffleHog]",
+            extra_labels=[]
+        )
+        
+        assert repo == "owner/repo"
+        assert created is False
+
+    @mock.patch.object(GHClient, 'repo_meta')
+    @mock.patch.object(GHClient, 'search_issue_by_title')
+    @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
+    @mock.patch.object(GHClient, 'create_issue')
+    @mock.patch.object(GHClient, 'ensure_labels')
+    def test_process_repo_force_create_bypasses_dedup(self, mock_labels, mock_create, 
+                                                        mock_hash_search, mock_title_search, mock_meta):
+        """Test that force_create=True bypasses deduplication checks."""
+        from trufflehog_scanner import process_repo
+        
+        mock_meta.return_value = {"archived": False, "disabled": False}
+        mock_title_search.return_value = True  # Issue would normally exist
+        mock_hash_search.return_value = True   # Hash would normally match
+        mock_create.return_value = "https://github.com/owner/repo/issues/2"
+        mock_labels.return_value = None
+
+        client = GHClient(token="fake-token", dry_run=False)
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
+        
+        repo, created = process_repo(
+            gh=client,
+            repo="owner/repo",
+            items=items,
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            title_prefix="[TruffleHog]",
+            extra_labels=[],
+            force_create=True  # Force creation despite existing issues
+        )
+        
+        assert repo == "owner/repo"
+        assert created is True
+        # Dedup checks should not be called when force_create=True
+        mock_title_search.assert_not_called()
+        mock_hash_search.assert_not_called()
+        mock_create.assert_called_once()
+
+    @mock.patch.object(GHClient, 'repo_meta')
+    def test_process_repo_skips_archived_repo(self, mock_meta):
+        """Test that process_repo skips archived repositories."""
+        from trufflehog_scanner import process_repo
+        
+        mock_meta.return_value = {"archived": True, "disabled": False}
+
+        client = GHClient(token="fake-token", dry_run=False)
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
+        
+        repo, created = process_repo(
+            gh=client,
+            repo="owner/repo",
+            items=items,
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            title_prefix="[TruffleHog]",
+            extra_labels=[]
+        )
+        
+        assert repo == "owner/repo"
+        assert created is False
 
 
 if __name__ == "__main__":

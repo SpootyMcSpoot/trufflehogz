@@ -4,11 +4,6 @@ on:
   schedule:
     # Run every Sunday at 6 PM UTC (Sunday evening)
     - cron: '0 18 * * 0'
-  push:
-    branches:
-      - '**'
-  pull_request:
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       org_names:
@@ -92,9 +87,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  TRUFFLEHOG_VERSION: ${{ vars.TRUFFLEHOG_VERSION || '3.90.6' }}
-  TRUFFLEHOG_IMAGE: ${{ vars.TRUFFLEHOG_IMAGE || 'ghcr.io/trufflesecurity/trufflehog:3.90.6' }}
-  TRUFFLEHOG_CACHE_FILE: ${{ vars.TRUFFLEHOG_CACHE_FILE || '.trufflehog_cache/trufflehog-3.90.6.tar' }}
+  TRUFFLEHOG_VERSION: ${{ vars.TRUFFLEHOG_VERSION || '3.92.5' }}
+  TRUFFLEHOG_IMAGE: ${{ vars.TRUFFLEHOG_IMAGE || 'ghcr.io/trufflesecurity/trufflehog:3.92.5' }}
+  TRUFFLEHOG_CACHE_FILE: ${{ vars.TRUFFLEHOG_CACHE_FILE || '.trufflehog_cache/trufflehog-3.92.5.tar' }}
 
 jobs:
   resolve-matrix:
@@ -135,9 +130,9 @@ jobs:
       total_shards: ${{ steps.build.outputs.total_shards }}
     env:
       # GitHub App credentials (preferred)
-      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_ID: ${{ vars.GH_APP_ID }}
       GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
-      GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+      GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
       # Fallback to PAT
       GH_PAT: ${{ secrets.GH_PAT }}
       API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
@@ -293,8 +288,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p "diag-${ORG}"
-          : > "findings-${ORG}.json"
-          : > "errors-${ORG}.json"
+          : > "findings-${ORG}.ndjson"
+          : > "errors-${ORG}.ndjson"
           : > "diag-${ORG}/SCAN_SUMMARY.txt"
           # Emit a structured warning line so it shows in the final summary
           printf '{"org":"%s","repo":"(org-level)","stage":"%s","status":%s,"message":%s}\n' \
@@ -302,7 +297,7 @@ jobs:
             "${{ matrix.warn_stage || 'org_membership' }}" \
             "${{ matrix.warn_status || 403 }}" \
             "$(jq -Rsa . <<< "${{ matrix.warn_message || format('Access warning for {0}', matrix.org) }}")" \
-            >> "errors-${ORG}.json"
+            >> "errors-${ORG}.ndjson"
           echo "WARN: ${{ matrix.warn_message }}"
 
       - name: Prime/restore TruffleHog image cache
@@ -342,7 +337,7 @@ jobs:
               "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
             if [ "${code}" != "200" ]; then
               mkdir -p "tmp-errors-${ORG}"
-              echo "{\"org\":\"${ORG}\",\"repo\":\"(org-level)\",\"stage\":\"list_repos\",\"status\":${code},\"message\":\"GET /orgs/${ORG}/repos page=${page}\"}" >> "tmp-errors-${ORG}/errors.json"
+              echo "{\"org\":\"${ORG}\",\"repo\":\"(org-level)\",\"stage\":\"list_repos\",\"status\":${code},\"message\":\"GET /orgs/${ORG}/repos page=${page}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
               rm -f "${body}"
               break
             fi
@@ -461,7 +456,7 @@ jobs:
                 -H "Accept: application/vnd.github+json" \
                 "${API}/repos/${full}/branches?per_page=100&page=${page}")" || code=000
               if [ "${code}" != "200" ]; then
-                echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"list_branches\",\"status\":${code},\"message\":\"GET /repos/${full}/branches page=${page}\"}" >> "tmp-errors-${ORG}/errors.json"
+                echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"list_branches\",\"status\":${code},\"message\":\"GET /repos/${full}/branches page=${page}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
                 rm -f "${tmp}"; break
               fi
               count="$(jq 'length' < "${tmp}")"
@@ -512,7 +507,7 @@ jobs:
           scan_one() {
             local full="$1"
             local repo_size="${2:-0}"
-            local out="tmp-findings-${ORG}/${full//\//__}.json"
+            local out="tmp-findings-${ORG}/${full//\//__}.ndjson"
             local err="tmp-logs-${ORG}/${full//\//__}.stderr.log"
             local REPO_URL="https://${GH_PAT}:x-oauth-basic@github.com/${full}.git"
 
@@ -537,7 +532,7 @@ jobs:
                   --branch "$br" "${EXTRA_FLAGS[@]}" >> "$out" 2>> "$err" || {
                     local exit_code=$?
                     if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
-                      echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"branch\":\"${br}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.json"
+                      echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"branch\":\"${br}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
                       echo "[${ORG}] ${full}:${br} TIMEOUT after ${timeout}"
                     fi
                   }
@@ -549,7 +544,7 @@ jobs:
                 "${EXTRA_FLAGS[@]}" > "$out" 2> "$err" || {
                   local exit_code=$?
                   if [ "${exit_code}" -eq 124 ] || [ "${exit_code}" -eq 137 ]; then
-                    echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.json"
+                    echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"scan_timeout\",\"timeout\":\"${timeout}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
                     echo "[${ORG}] ${full} TIMEOUT after ${timeout}"
                   fi
                 }
@@ -577,25 +572,25 @@ jobs:
           done < "repos-${ORG}-shard-${SHARD_INDEX1}-of-${SHARD_TOTAL}.txt"
           wait
 
-          : > "findings-${ORG}.json"
-          if compgen -G "tmp-findings-${ORG}/*.json" > /dev/null; then
-            LC_ALL=C ls -1 "tmp-findings-${ORG}"/*.json | while read -r f; do cat "$f"; done >> "findings-${ORG}.json"
+          : > "findings-${ORG}.ndjson"
+          if compgen -G "tmp-findings-${ORG}/*.ndjson" > /dev/null; then
+            LC_ALL=C ls -1 "tmp-findings-${ORG}"/*.ndjson | while read -r f; do cat "$f"; done >> "findings-${ORG}.ndjson"
           fi
 
-          : > "errors-${ORG}.json"
-          [ -f "tmp-errors-${ORG}/errors.json" ] && cat "tmp-errors-${ORG}/errors.json" >> "errors-${ORG}.json" || true
+          : > "errors-${ORG}.ndjson"
+          [ -f "tmp-errors-${ORG}/errors.ndjson" ] && cat "tmp-errors-${ORG}/errors.ndjson" >> "errors-${ORG}.ndjson" || true
 
-          total_files=$(find "tmp-findings-${ORG}" -name '*.json' | wc -l || echo 0)
-          non_empty=$(find "tmp-findings-${ORG}" -name '*.json' -size +0c | wc -l || echo 0)
+          total_files=$(find "tmp-findings-${ORG}" -name '*.ndjson' | wc -l || echo 0)
+          non_empty=$(find "tmp-findings-${ORG}" -name '*.ndjson' -size +0c | wc -l || echo 0)
           empty=$(( total_files - non_empty ))
-          echo "[${ORG}] per-repo JSON files: total=${total_files}, non-empty=${non_empty}, empty=${empty}"
-          echo "[${ORG}] merged findings lines: $(wc -l < "findings-${ORG}.json" || echo 0)"
-          echo "[${ORG}] merged error lines: $(wc -l < "errors-${ORG}.json" || echo 0)"
+          echo "[${ORG}] per-repo NDJSON files: total=${total_files}, non-empty=${non_empty}, empty=${empty}"
+          echo "[${ORG}] merged findings lines: $(wc -l < "findings-${ORG}.ndjson" || echo 0)"
+          echo "[${ORG}] merged error lines: $(wc -l < "errors-${ORG}.ndjson" || echo 0)"
 
           : > "diag-${ORG}/SCAN_SUMMARY.txt"
-          for f in tmp-findings-${ORG}/*.json; do
+          for f in tmp-findings-${ORG}/*.ndjson; do
             [ -e "$f" ] || continue
-            base="$(basename "${f%.json}")"; repo="${base//__/\/}"
+            base="$(basename "${f%.ndjson}")"; repo="${base//__/\/}"
             count="$(wc -l < "$f" || echo 0)"; errf="tmp-logs-${ORG}/${base}.stderr.log"
             err_bytes=0; [ -f "$errf" ] && err_bytes="$(stat -c %s "$errf" 2>/dev/null || echo 0)"
             printf "repo=%s\tfindings=%s\tstderr_bytes=%s\n" "$repo" "$count" "$err_bytes" >> "diag-${ORG}/SCAN_SUMMARY.txt"
@@ -606,8 +601,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p "diag-${ORG}"
-          [ -f "findings-${ORG}.json" ] || : > "findings-${ORG}.json"
-          [ -f "errors-${ORG}.json" ]   || : > "errors-${ORG}.json"
+          [ -f "findings-${ORG}.ndjson" ] || : > "findings-${ORG}.ndjson"
+          [ -f "errors-${ORG}.ndjson" ]   || : > "errors-${ORG}.ndjson"
           [ -f "diag-${ORG}/SCAN_SUMMARY.txt" ] || : > "diag-${ORG}/SCAN_SUMMARY.txt"
 
       - name: Upload per-shard artifacts (findings/errors)
@@ -615,8 +610,8 @@ jobs:
         with:
           name: trufflehog-findings-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
-            findings-${{ env.ORG }}.json
-            errors-${{ env.ORG }}.json
+            findings-${{ env.ORG }}.ndjson
+            errors-${{ env.ORG }}.ndjson
           if-no-files-found: warn
           compression-level: 6
 
@@ -641,9 +636,9 @@ jobs:
     env:
       ORG: ${{ matrix.org }}
       # GitHub App credentials (preferred)
-      GH_APP_ID: ${{ secrets.GH_APP_ID }}
+      GH_APP_ID: ${{ vars.GH_APP_ID }}
       GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
-      GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
+      GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
       # Fallback to PAT
       GH_PAT: ${{ secrets.GH_PAT }}
       RUN_URL: ${{ github.run_url }}
@@ -667,24 +662,24 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ github.run_id }}
 
-      - name: Merge shard JSON
+      - name: Merge shard NDJSON
         shell: bash
         run: |
           set -Eeuo pipefail
           ROOT="merge/${ORG}"
           [ -d "$ROOT" ] || { echo "No shard artifacts found for ${ORG}"; exit 0; }
-          : > "findings-${ORG}-ALL.json"
-          : > "errors-${ORG}-ALL.json"
-          find "$ROOT" -type f -name 'findings-*.json' -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "findings-'${ORG}'-ALL.json"' || true
-          find "$ROOT" -type f -name 'errors-*.json'   -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "errors-'${ORG}'-ALL.json"'   || true
-          echo "Merged findings lines: $(wc -l < "findings-${ORG}-ALL.json" || echo 0)"
-          echo "Merged errors   lines: $(wc -l < "errors-${ORG}-ALL.json" || echo 0)"
+          : > "findings-${ORG}-ALL.ndjson"
+          : > "errors-${ORG}-ALL.ndjson"
+          find "$ROOT" -type f -name 'findings-*.ndjson' -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "findings-'${ORG}'-ALL.ndjson"' || true
+          find "$ROOT" -type f -name 'errors-*.ndjson'   -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "errors-'${ORG}'-ALL.ndjson"'   || true
+          echo "Merged findings lines: $(wc -l < "findings-${ORG}-ALL.ndjson" || echo 0)"
+          echo "Merged errors   lines: $(wc -l < "errors-${ORG}-ALL.ndjson" || echo 0)"
 
       - name: Summarize (verified-unique) and optionally open issues
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [ ! -s "findings-${ORG}-ALL.json" ]; then
+          if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
             echo "[${ORG}] No merged findings to summarize."
             echo "## TruffleHog summary for \`${ORG}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- No findings to report" >> "$GITHUB_STEP_SUMMARY"
@@ -721,8 +716,8 @@ jobs:
           fi
           if [ "${CREATE_ISSUES}" = "true" ]; then DRY=""; else DRY="--dry-run"; fi
           python3 trufflehog_scanner.py \
-            --json "findings-${ORG}-ALL.json" \
-            --errors-ndjson "errors-${ORG}-ALL.json" \
+            --ndjson "findings-${ORG}-ALL.ndjson" \
+            --errors-ndjson "errors-${ORG}-ALL.ndjson" \
             --org "$ORG" \
             --print-sanitized 25 \
             --write-summary \
@@ -741,7 +736,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [ -s "errors-${ORG}-ALL.json" ] && grep -q '"status":401' "errors-${ORG}-ALL.json"; then
+          if [ -s "errors-${ORG}-ALL.ndjson" ] && grep -q '"status":401' "errors-${ORG}-ALL.ndjson"; then
             echo "::error title=Auth error detected (401)::Found one or more 401 responses while scanning ${ORG}."
             exit 1
           fi
@@ -751,8 +746,8 @@ jobs:
         with:
           name: trufflehog-findings-${{ env.ORG }}-ALL
           path: |
-            findings-${{ env.ORG }}-ALL.json
-            errors-${{ env.ORG }}-ALL.json
+            findings-${{ env.ORG }}-ALL.ndjson
+            errors-${{ env.ORG }}-ALL.ndjson
           if-no-files-found: warn
           compression-level: 6
 
