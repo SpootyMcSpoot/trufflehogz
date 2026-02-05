@@ -296,7 +296,7 @@ jobs:
     if: always()
     env:
       REPO_NAME: ${{ needs.plan.outputs.repo_name }}
-      SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown' }}
+      SCAN_RESULTS: ${{ inputs.scan_results || 'verified,unknown,unverified' }}
       SCAN_MODE: ${{ inputs.scan_mode || 'full' }}
     steps:
       - name: Generate workflow summary
