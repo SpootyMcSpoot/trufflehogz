@@ -1,12 +1,9 @@
-name: "TruffleHog - Org Scan"
+name: "TruffleHog – Org Scan (Non-Public Repos)"
 
 on:
   schedule:
     # Run every Sunday at 6 PM UTC (Sunday evening)
-    - cron: '0 18 * * 0'
-  pull_request:
-    branches:
-      - main
+    - cron: '0 0 * * 1'  # 4:00 PM PST (Sun) = 00:00 UTC (Mon)
   workflow_dispatch:
     inputs:
       org_names:
@@ -22,12 +19,12 @@ on:
       scan_results:
         description: "Results filter"
         required: false
-        default: "all"
+        default: "verified,unknown"
         type: choice
         options:
-          - "all"
-          - "verified,unknown"
           - "verified"
+          - "verified,unknown"
+          - "all"
       issues_creation_orgs:
         description: "Comma-separated list of orgs where issues should be created (empty = all orgs)"
         required: false
@@ -79,15 +76,17 @@ on:
           - "7"
           - "14"
           - "30"
-      repo_visibility:
-        description: "Repository visibility filter"
+      per_repo_timeout:
+        description: "Per-repo scan timeout (adaptive scales up to this for large repos, 500MB+ get 2×)"
         required: false
-        default: "public"
+        default: "10m"
         type: choice
         options:
-          - "public"
-          - "all"
-          - "private"
+          - "5m"
+          - "10m"
+          - "15m"
+          - "20m"
+          - "30m"
 
 permissions:
   contents: read
@@ -111,10 +110,7 @@ jobs:
     env:
       INPUT_ORGS: ${{ inputs.org_names }}
       VAR_ORGS: ${{ vars.TRUFFLEHOG_ORGS }}
-      # Default to public test orgs for self-testing/validation
-      # - trufflesecurity: test_keys repo with intentional secrets (AWS, SSH, auth URI)
-      # - gitleaks: fake-leaks repo for secret detection testing
-      DEFAULT_ORGS: "trufflesecurity,gitleaks"
+      DEFAULT_ORGS: ""
     steps:
       - id: set-matrix
         shell: bash
@@ -143,6 +139,7 @@ jobs:
       orgs_json:  ${{ needs.resolve-matrix.outputs.orgs_json }}
       total_repos: ${{ steps.build.outputs.total_repos }}
       total_shards: ${{ steps.build.outputs.total_shards }}
+      org_notes: ${{ steps.build.outputs.org_notes }}
     env:
       # GitHub App credentials (preferred)
       GH_APP_ID: ${{ vars.GH_APP_ID }}
@@ -154,17 +151,16 @@ jobs:
       SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
       REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
-      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
     steps:
       - id: build
         shell: bash
         env:
           ORGS_JSON: ${{ needs.resolve-matrix.outputs.orgs_json }}
-          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
         run: |
           set -Eeuo pipefail
           mapfile -t ORGS < <(jq -r '.org[]' <<< "${ORGS_JSON}")
           TASKS='[]'
+          ORG_NOTES='[]'
           TOTAL_REPOS_ALL=0
           TOTAL_SHARDS_ALL=0
 
@@ -178,38 +174,36 @@ jobs:
           for ORG in "${ORGS[@]}"; do
             echo "::group::Plan for ${ORG}"
 
-            # ---- Membership probe (skip for public-only scans) ----
-            # When scanning only public repos, we don't need org membership
-            if [ "${REPO_VISIBILITY}" != "public" ]; then
-              memb_body="$(mktemp)"; memb_code=0
-              memb_code="$(curl -sS -w '%{http_code}' -o "${memb_body}" \
-                -H "Authorization: Bearer ${GH_PAT}" \
-                -H "Accept: application/vnd.github+json" \
-                "${API}/user/memberships/orgs/${ORG}")" || memb_code=000
+            # ---- Membership probe ----
+            memb_body="$(mktemp)"; memb_code=0
+            memb_code="$(curl -sS -w '%{http_code}' -o "${memb_body}" \
+              -H "Authorization: Bearer ${GH_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              "${API}/user/memberships/orgs/${ORG}")" || memb_code=000
 
-              if [ "${memb_code}" = "401" ]; then
-                warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
-                echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
-                add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
-                echo "::endgroup::"; continue
-              fi
+            if [ "${memb_code}" = "401" ]; then
+              warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
+              echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
+              add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
+              ORG_NOTES="$(jq -c --arg o "$ORG" --arg n "⚠️ Auth error (401) — PAT lacks read:org + repo scope" '. + [{org:$o, note:$n}]' <<< "$ORG_NOTES")"
+              echo "::endgroup::"; continue
+            fi
 
-              if [ "${memb_code}" = "403" ] || [ "${memb_code}" = "404" ] || [ "${memb_code}" = "000" ]; then
-                warn_msg="GET /user/memberships/orgs/${ORG} => ${memb_code}. Ensure PAT is member (state=active) and has 'read:org' + 'repo'."
-                echo "::warning title=No org membership or insufficient scopes::${warn_msg}"
-                add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
-                echo "::endgroup::"; continue
-              fi
+            if [ "${memb_code}" = "403" ] || [ "${memb_code}" = "404" ] || [ "${memb_code}" = "000" ]; then
+              warn_msg="GET /user/memberships/orgs/${ORG} => ${memb_code}. Ensure PAT is member (state=active) and has 'read:org' + 'repo'."
+              echo "::warning title=No org membership or insufficient scopes::${warn_msg}"
+              add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
+              ORG_NOTES="$(jq -c --arg o "$ORG" --arg n "⚠️ No org membership or insufficient scopes (${memb_code})" '. + [{org:$o, note:$n}]' <<< "$ORG_NOTES")"
+              echo "::endgroup::"; continue
+            fi
 
-              state="$(jq -r '.state // ""' < "${memb_body}")"; rm -f "${memb_body}"
-              if [ "${state}" != "active" ]; then
-                warn_msg="Org membership for ${ORG} is not active (state='${state}')."
-                echo "::warning title=Org membership not active::${warn_msg}"
-                add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
-                echo "::endgroup::"; continue
-              fi
-            else
-              echo "Skipping membership check for public-only scan of ${ORG}"
+            state="$(jq -r '.state // ""' < "${memb_body}")"; rm -f "${memb_body}"
+            if [ "${state}" != "active" ]; then
+              warn_msg="Org membership for ${ORG} is not active (state='${state}')."
+              echo "::warning title=Org membership not active::${warn_msg}"
+              add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
+              ORG_NOTES="$(jq -c --arg o "$ORG" --arg n "⚠️ Org membership not active (state=${state})" '. + [{org:$o, note:$n}]' <<< "$ORG_NOTES")"
+              echo "::endgroup::"; continue
             fi
 
             # ---- Count visible repos ----
@@ -233,21 +227,17 @@ jobs:
               fi
               count="$(jq 'length' < "${body}")"
               [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
-              # Filter by visibility: all, public, or private
-              if [ "${REPO_VISIBILITY}" = "public" ]; then
-                inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select(.visibility == "public" or .private == false) ] | length' < "${body}")"
-              elif [ "${REPO_VISIBILITY}" = "private" ]; then
-                inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select(.visibility != "public" and .private == true) ] | length' < "${body}")"
-              else
-                inc="$(jq '[ .[] | select(.archived==false and .fork==false) ] | length' < "${body}")"
-              fi
+              inc="$(jq '[ .[] | select(.archived==false and .fork==false) | select((.visibility != "public") or (.private==true)) ] | length' < "${body}")"
               total=$(( total + inc )); rm -f "${body}"
               [ "${count}" -lt 100 ] && break
               page=$((page+1))
             done
 
-            echo "Visible eligible repos for ${ORG}: ${total}"
+            echo "Visible eligible repos for ${ORG} (non-public, non-archived, non-fork): ${total}"
             TOTAL_REPOS_ALL=$((TOTAL_REPOS_ALL + total))
+            if [ "${total}" -eq 0 ]; then
+              ORG_NOTES="$(jq -c --arg o "$ORG" --arg n "ℹ️ No non-public repos found (0 eligible repos)" '. + [{org:$o, note:$n}]' <<< "$ORG_NOTES")"
+            fi
             # Improved sharding: use configurable repos per shard
             if [ "${total}" -le "${REPOS_PER_SHARD}" ]; then
               shards=1
@@ -269,8 +259,9 @@ jobs:
           echo "tasks_json=${TASKS}" >> "$GITHUB_OUTPUT"
           echo "total_repos=${TOTAL_REPOS_ALL}" >> "$GITHUB_OUTPUT"
           echo "total_shards=${TOTAL_SHARDS_ALL}" >> "$GITHUB_OUTPUT"
+          echo "org_notes=${ORG_NOTES}" >> "$GITHUB_OUTPUT"
           echo "Tasks matrix: ${TASKS}"
-          echo "::notice title=Scan Plan::Total repos: ${TOTAL_REPOS_ALL}, Total shards: ${TOTAL_SHARDS_ALL}"
+          echo "::notice title=Scan Plan::Non-public repos: ${TOTAL_REPOS_ALL}, Total shards: ${TOTAL_SHARDS_ALL}"
 
   scan-org:
     runs-on: ubuntu-latest
@@ -287,7 +278,7 @@ jobs:
       API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
       SCAN_HISTORY: ${{ vars.SCAN_HISTORY || 'true' }}
       ALL_HEADS: ${{ vars.ALL_HEADS || 'true' }}
-      PER_REPO_TIMEOUT: ${{ vars.PER_REPO_TIMEOUT || '5m' }}
+      PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || vars.PER_REPO_TIMEOUT || '10m' }}
       SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
       MAX_REPO_SIZE_KB: ${{ vars.MAX_REPO_SIZE_KB || '0' }}
       SCAN_RESULTS: ${{ inputs.scan_results || vars.DEFAULT_SCAN_RESULTS || 'verified,unknown' }}
@@ -307,10 +298,11 @@ jobs:
       ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
       SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
-      REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: If plan warned for this org, record warning and skip scan
         if: ${{ matrix.will_warn == true }}
@@ -332,7 +324,7 @@ jobs:
 
       - name: Prime/restore TruffleHog image cache
         if: ${{ matrix.will_warn != true }}
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
         with:
           path: ${{ env.TRUFFLEHOG_CACHE_FILE }}
           key: trufflehog-image-${{ env.TRUFFLEHOG_VERSION }}
@@ -357,7 +349,9 @@ jobs:
           GH_AUTH: "Bearer ${{ env.GH_PAT }}"
         run: |
           set -Eeuo pipefail
+          # E5: Single pagination loop captures both repo names AND sizes
           : > "repos-${ORG}.txt"
+          : > "repos-${ORG}-sizes.txt"
           page=1
           while :; do
             body="$(mktemp)"; code=0
@@ -373,46 +367,15 @@ jobs:
             fi
             count="$(jq 'length' < "${body}")"
             [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
-            # Filter by visibility: all, public, or private
-            if [ "${REPO_VISIBILITY}" = "public" ]; then
-              jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
-                .[] |
-                select(.archived==false and .fork==false) |
-                select(.visibility == "public" or .private == false) |
-                select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
-                .full_name
-              ' "${body}" >> "repos-${ORG}.txt"
-            elif [ "${REPO_VISIBILITY}" = "private" ]; then
-              jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
-                .[] |
-                select(.archived==false and .fork==false) |
-                select(.visibility != "public" and .private == true) |
-                select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
-                .full_name
-              ' "${body}" >> "repos-${ORG}.txt"
-            else
-              jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
-                .[] |
-                select(.archived==false and .fork==false) |
-                select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
-                .full_name
-              ' "${body}" >> "repos-${ORG}.txt"
-            fi
-            rm -f "${body}"
-            page=$((page+1))
-          done
-          # Create repos-to-size mapping file for adaptive timeout
-          : > "repos-${ORG}-sizes.txt"
-          page=1
-          while :; do
-            body="$(mktemp)"; code=0
-            code="$(curl -sS -w '%{http_code}' -o "${body}" \
-              -H "Authorization: Bearer ${GH_PAT}" \
-              -H "Accept: application/vnd.github+json" \
-              "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
-            if [ "${code}" != "200" ]; then rm -f "${body}"; break; fi
-            count="$(jq 'length' < "${body}")"
-            [ "${count}" -eq 0 ] && { rm -f "${body}"; break; }
+            # Extract filtered repo names (non-public, !archived, !fork, within size cap)
+            jq -r --argjson cap "${MAX_REPO_SIZE_KB}" '
+              .[] |
+              select(.archived==false and .fork==false) |
+              select((.visibility != "public") or (.private==true)) |
+              select(($cap|tonumber)==0 or (.size <= ($cap|tonumber))) |
+              .full_name
+            ' "${body}" >> "repos-${ORG}.txt"
+            # Extract full_name:size mapping for ALL repos (used by adaptive timeout + size-based sharding)
             jq -r '.[] | "\(.full_name):\(.size)"' "${body}" >> "repos-${ORG}-sizes.txt"
             rm -f "${body}"
             [ "${count}" -lt 100 ] && break
@@ -541,14 +504,25 @@ jobs:
               return
             fi
             # Adaptive timeout based on repo size
+            # PER_REPO_TIMEOUT is the ceiling for the largest tier
             if [ "${size_kb}" -lt 1000 ]; then
               echo "2m"
             elif [ "${size_kb}" -lt 10000 ]; then
               echo "5m"
             elif [ "${size_kb}" -lt 100000 ]; then
               echo "10m"
+            elif [ "${size_kb}" -lt 500000 ]; then
+              echo "${PER_REPO_TIMEOUT}"
             else
-              echo "15m"
+              # Extremely large repos (>500MB): double PER_REPO_TIMEOUT
+              # Parse timeout value (e.g. "5m" -> 5, "15m" -> 15)
+              local val="${PER_REPO_TIMEOUT%m}"
+              val="${val%s}"  # strip trailing 's' if seconds format
+              if [[ "${PER_REPO_TIMEOUT}" == *m ]]; then
+                echo "$(( val * 2 ))m"
+              else
+                echo "$(( val * 2 ))s"
+              fi
             fi
           }
 
@@ -654,7 +628,7 @@ jobs:
           [ -f "diag-${ORG}/SCAN_SUMMARY.txt" ] || : > "diag-${ORG}/SCAN_SUMMARY.txt"
 
       - name: Upload per-shard artifacts (findings/errors)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: trufflehog-findings-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -664,7 +638,7 @@ jobs:
           compression-level: 6
 
       - name: Upload per-shard troubleshoot bundle (curated)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: trufflehog-troubleshoot-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -694,7 +668,9 @@ jobs:
       INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
       VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Install Python dependencies
         run: |
@@ -702,7 +678,7 @@ jobs:
           pip install PyJWT cryptography
 
       - name: Download shard artifacts for org
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           pattern: trufflehog-findings-${{ env.ORG }}-shard-*-of-*
           path: merge/${{ env.ORG }}
@@ -722,45 +698,6 @@ jobs:
           find "$ROOT" -type f -name 'errors-*.ndjson'   -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "errors-'${ORG}'-ALL.ndjson"'   || true
           echo "Merged findings lines: $(wc -l < "findings-${ORG}-ALL.ndjson" || echo 0)"
           echo "Merged errors   lines: $(wc -l < "errors-${ORG}-ALL.ndjson" || echo 0)"
-
-      - name: Analyze findings breakdown
-        id: analyze
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
-            echo "total=0" >> $GITHUB_OUTPUT
-            echo "verified=0" >> $GITHUB_OUTPUT
-            echo "unverified=0" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          TOTAL=$(wc -l < "findings-${ORG}-ALL.ndjson" | tr -d ' ')
-          VERIFIED=$(jq -r 'select(.Verified == true)' "findings-${ORG}-ALL.ndjson" | wc -l | tr -d ' ')
-          UNVERIFIED=$((TOTAL - VERIFIED))
-
-          echo "total=$TOTAL" >> $GITHUB_OUTPUT
-          echo "verified=$VERIFIED" >> $GITHUB_OUTPUT
-          echo "unverified=$UNVERIFIED" >> $GITHUB_OUTPUT
-
-          # Write findings breakdown to summary
-          {
-            echo "## TruffleHog Findings for \`${ORG}\`"
-            echo ""
-            echo "| Category | Count |"
-            echo "|----------|-------|"
-            echo "| **Total** | **${TOTAL}** |"
-            echo "| Verified | ${VERIFIED} |"
-            echo "| Unverified | ${UNVERIFIED} |"
-            echo ""
-            if [ "$TOTAL" -gt 0 ]; then
-              echo "### By Detector Type (Top 10)"
-              echo "\`\`\`"
-              jq -r '.DetectorName' "findings-${ORG}-ALL.ndjson" | sort | uniq -c | sort -rn | head -10
-              echo "\`\`\`"
-              echo ""
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize (verified-unique) and optionally open issues
         shell: bash
@@ -829,7 +766,7 @@ jobs:
           fi
 
       - name: Upload merged artifacts (per-org)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: trufflehog-findings-${{ env.ORG }}-ALL
           path: |
@@ -849,9 +786,10 @@ jobs:
           TOTAL_REPOS: ${{ needs.plan.outputs.total_repos }}
           TOTAL_SHARDS: ${{ needs.plan.outputs.total_shards }}
           ORGS_JSON: ${{ needs.plan.outputs.orgs_json }}
+          ORG_NOTES: ${{ needs.plan.outputs.org_notes }}
           OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
           SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
-          PER_REPO_TIMEOUT: ${{ vars.PER_REPO_TIMEOUT || '5m' }}
+          PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || vars.PER_REPO_TIMEOUT || '10m' }}
           SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
           REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
           SCAN_RESULTS: ${{ inputs.scan_results || vars.DEFAULT_SCAN_RESULTS || 'verified,unknown' }}
@@ -863,7 +801,6 @@ jobs:
           ADAPTIVE_TIMEOUT: ${{ vars.ADAPTIVE_TIMEOUT || 'true' }}
           SKIP_STALE_BRANCHES: ${{ inputs.deep_scan == true && 'false' || 'true' }}
           SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
-          REPO_VISIBILITY: ${{ inputs.repo_visibility || vars.DEFAULT_REPO_VISIBILITY || 'public' }}
         run: |
           set -Eeuo pipefail
 
@@ -874,7 +811,7 @@ jobs:
             echo "| Setting | Value |"
             echo "|---------|-------|"
             echo "| Organizations | \`$(jq -r '.org | join(", ")' <<< "$ORGS_JSON")\` |"
-            echo "| Total Repositories | **${TOTAL_REPOS}** |"
+            echo "| Non-Public Repositories | **${TOTAL_REPOS}** (excludes public, archived, forks) |"
             echo "| Total Shards | **${TOTAL_SHARDS}** |"
             echo "| Repos per Shard (target) | ${REPOS_PER_SHARD} |"
             echo "| Max Shards per Org | ${SHARD_CAP} |"
@@ -886,7 +823,6 @@ jobs:
             echo "## Scan Configuration"
             echo "| Feature | Value |"
             echo "|---------|-------|"
-            echo "| Repo Visibility | ${REPO_VISIBILITY} |"
             echo "| Deep Scan Mode | ${DEEP_SCAN} |"
             echo "| Branch Strategy | ${BRANCH_STRATEGY} |"
             echo "| Branch Lookback Days | ${BRANCH_LOOKBACK_DAYS} |"
@@ -901,10 +837,20 @@ jobs:
             [ "${BRANCH_STRATEGY}" = "all" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **All branches mode**: Scanning all branches in each repository"
             [ "${SCAN_MODE}" = "recent" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Time-based scanning enabled**: Only scanning commits from last ${SCAN_LOOKBACK_DAYS} days"
             [ "${SCAN_MODE}" = "full" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Full history scan**: Scanning all commits in repository history"
-            [ "${ADAPTIVE_TIMEOUT}" = "true" ] && echo "> **Adaptive timeout enabled**: Smaller repos get shorter timeouts (2-5m), large repos get longer (10-15m)"
+            [ "${ADAPTIVE_TIMEOUT}" = "true" ] && echo "> **Adaptive timeout enabled**: Smaller repos get shorter timeouts (2-5m), large repos scale up to PER_REPO_TIMEOUT (${PER_REPO_TIMEOUT}), 500MB+ repos get 2× ($(( ${PER_REPO_TIMEOUT%m} * 2 ))m)"
             [ "${SKIP_STALE_BRANCHES}" = "true" ] && [ "${DEEP_SCAN}" != "true" ] && echo "> **Stale branch filtering**: Skipping branches with no activity in 90 days"
             [ "${SIZE_BASED_SHARDING}" = "true" ] && echo "> **Size-based sharding enabled**: Repos distributed by size for better load balancing"
             echo ""
+            # Per-org notes (zero repos, access warnings)
+            NOTES_COUNT=$(jq 'length' <<< "${ORG_NOTES}")
+            if [ "${NOTES_COUNT}" -gt 0 ]; then
+              echo "## Organization Notes"
+              echo ""
+              echo "| Organization | Note |"
+              echo "|---|---|"
+              jq -r '.[] | "| \(.org) | \(.note) |"' <<< "${ORG_NOTES}"
+              echo ""
+            fi
             echo "## Status"
             echo "- Scan completed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "- Workflow run: ${{ github.run_url }}"

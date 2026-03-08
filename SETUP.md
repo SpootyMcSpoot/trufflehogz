@@ -17,14 +17,14 @@ TruffleHog supports two authentication methods. **GitHub App is recommended** fo
 **Setup**: See [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) for detailed instructions.
 
 **Quick Setup**:
-1. Create GitHub App with Contents (Read), Issues (Read/Write), Members (Read)
+1. Create GitHub App with Contents (Read), Metadata (Read), Issues (Read/Write), Members (Read)
 2. Generate private key
 3. Install app to organization
 4. Add secrets: `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_INSTALLATION_ID`
 
-### GitHub Personal Access Token (Legacy)
+### Personal Access Token (PAT)
 
-### Fine-Grained PAT (Recommended)
+#### Fine-Grained PAT (Recommended)
 
 **Create**: Settings → Developer settings → Personal access tokens → Fine-grained tokens
 
@@ -38,7 +38,7 @@ TruffleHog supports two authentication methods. **GitHub App is recommended** fo
 - Max 1 year expiration (required)
 - More secure but complex setup
 
-### Classic PAT (Simpler)
+#### Classic PAT (Simpler)
 
 **Create**: Settings → Developer settings → Personal access tokens → Tokens (classic)
 
@@ -51,7 +51,7 @@ TruffleHog supports two authentication methods. **GitHub App is recommended** fo
 - Single token for all orgs
 - Optional expiration
 
-### Comparison
+#### Comparison
 
 | Feature | Fine-Grained | Classic |
 |---------|-------------|---------|
@@ -60,7 +60,7 @@ TruffleHog supports two authentication methods. **GitHub App is recommended** fo
 | Multi-Org | Token per org | Single token |
 | Expiration | Required (1 year max) | Optional |
 
-### Store Token
+#### Store Token
 
 Repository Settings → Secrets and variables → Actions → Secrets
 
@@ -69,7 +69,7 @@ Repository Settings → Secrets and variables → Actions → Secrets
 3. Value: Paste token
 4. Click "Add secret"
 
-### Troubleshooting
+#### Troubleshooting
 
 **401 Unauthorized**:
 - Classic: Ensure `repo` + `read:org` scopes
@@ -123,7 +123,8 @@ file=.*README(\.md|\.rst)?$
 ---
 
 **See also**:
-- [README.md](README.md) - Overview
-- [CONFIGURATION.md](CONFIGURATION.md) - Examples
+- [README.md](README.md) - Overview and full configuration reference
+- [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) - GitHub App authentication setup
+- [CONFIGURATION.md](CONFIGURATION.md) - Preset examples
 - [REMEDIATION.md](REMEDIATION.md) - Secrets remediation
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Performance tuning

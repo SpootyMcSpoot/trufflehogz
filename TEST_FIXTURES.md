@@ -184,17 +184,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/database
 
 ## Recommendations for Clarity
 
-To make it absolutely clear that these are test fixtures, consider:
-
-1. **Add Header Comments**: Add clear `# TEST DATA - NOT REAL CREDENTIALS` comments to all files
-2. **Create Separate Branch**: Maintain test fixtures in a dedicated `test-data` branch
-3. **Add README in Each Directory**: Place README files in `config/`, `keys/`, `scripts/`, and `test/` directories
-4. **Update .gitignore**: Add patterns to ignore real credentials while preserving test data
-5. **Documentation**: Reference this file from main README
-
-## Sample Header Comment
-
-For files containing test data, add this header:
+Files containing test secrets should include a clearly visible header comment noting they are test data. For example:
 
 ```
 # ===================================================================
@@ -228,9 +218,26 @@ While this repository contains intentional test secrets, **never commit real sec
 
 ## Testing Workflow
 
+### Self-Scan Workflow
+
+The **self-scan** workflow (`Actions → Self-Scan Test → Run workflow`) runs on every push and validates end-to-end:
+- Scans this repository's `test/fixtures/` test secrets
+- Asserts a minimum of **20 findings** are detected
+- Runs the full 4-job pipeline (plan → scan → summarize → workflow-summary)
+
+### Unit Tests
+
+The scanner has **122 unit tests** covering severity classification, label generation, hash deduplication, NDJSON loading, issue body generation, summary output, and end-to-end processing:
+
+```bash
+python3 -m pytest test_trufflehog_scanner.py -v
+```
+
+### Expectations
+
 When testing TruffleHog against this repository:
 
-1. **Expected Behavior**: TruffleHog should detect 50+ findings
+1. **Expected Behavior**: TruffleHog should detect 20+ findings (the self-scan workflow validates ≥ 20)
 2. **Verified Secrets**: Some secrets may show as "verified=false" (expected for fake data)
 3. **Detectors Triggered**: AWS, GitHub, PostgreSQL, Slack, Stripe, JWT, SSH, and more
 4. **False Positives**: Use `.github/trufflehog/false_positives.txt` to suppress known test data
@@ -256,7 +263,7 @@ If you discover what appears to be a **real** secret (not listed here as test da
 
 ---
 
-**Last Updated**: 2025-10-28
+**Last Updated**: 2025-07-16
 **Maintained By**: TruffleHogz Contributors
 
 ## References

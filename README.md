@@ -1,254 +1,465 @@
 # TruffleHog Organization Scanner
 
-> **Automated secret scanning for GitHub organizations with 40-80% faster performance.**
+> **Automated secret scanning for GitHub organizations — 40-80% faster with intelligent sharding.**
 
-Production-ready GitHub Actions workflow for scanning multiple organizations with TruffleHog OSS. Features intelligent sharding, parallel processing, and automated issue creation.
+Production-ready GitHub Actions workflows that scan multiple GitHub organizations with [TruffleHog OSS](https://github.com/trufflesecurity/trufflehog), create issues for findings, and generate actionable summaries.
+
+---
 
 ## Table of Contents
 
-| Document | Description |
-|----------|-------------|
-| [README.md](README.md) | Overview, quick start, and architecture |
-| [SETUP.md](SETUP.md) | PAT creation, org configuration |
-| [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) | GitHub App authentication setup |
-| [CONFIGURATION.md](CONFIGURATION.md) | Workflow inputs, examples, tuning |
-| [REMEDIATION.md](REMEDIATION.md) | Secrets remediation guide |
-| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Performance tuning, issue resolution |
-| [TEST_FIXTURES.md](TEST_FIXTURES.md) | Test secrets documentation |
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+- [Repository Structure](#repository-structure)
+- [Workflows](#workflows)
+- [Scanner Features](#scanner-features)
+- [Issue Creation](#issue-creation)
+- [Workflow Summary](#workflow-summary)
+- [Configuration Reference](#configuration-reference)
+- [Running Locally](#running-locally)
+- [Testing](#testing)
+- [Remediating Discovered Secrets](#remediating-discovered-secrets)
+- [Troubleshooting](#troubleshooting)
+- [Documentation Index](#documentation-index)
+
+---
 
 ## Quick Start
 
-1. **Add authentication**: Go to **Settings → Secrets and variables → Actions → Secrets**
-   - **Option A (Recommended)**: GitHub App - Add `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_INSTALLATION_ID` ([setup guide](GITHUB_APP_SETUP.md))
-   - **Option B (Fallback)**: PAT - Add `GH_PAT` with `repo` + `read:org` scopes ([setup guide](SETUP.md))
-2. **Set variable**: Go to **Settings → Secrets and variables → Actions → Variables**
-   - Add `TRUFFLEHOG_ORGS=org1,org2,org3`
-3. **Run**: Actions → TruffleHog Org Scan → Run workflow
+### 1. Add Authentication
 
-Done! Runs **40-80% faster** with optimized defaults. See **Configuration** section below for details.
+Go to **Settings → Secrets and variables → Actions → Secrets** and add one of:
 
-## Features
+| Method | Secrets to Add | Guide |
+|--------|---------------|-------|
+| **GitHub App** (recommended) | `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, `GH_APP_INSTALLATION_ID` | [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) |
+| **PAT** (fallback) | `GH_PAT` with `repo` + `read:org` scopes | [SETUP.md](SETUP.md) |
 
-**Performance**
-- Smart branch filtering (default + recent branches only)
-- Time-based scanning (last 7 days vs full history)
-- Adaptive timeout (2-15m based on repo size)
-- Parallel sharding (up to 20 shards per org)
+### 2. Set Target Organizations
 
-**Scanning Modes**
-- **Standard**: Fast scan of recent changes (default)
-- **Deep Scan**: All branches + full history (monthly audits)
-- **Custom**: 10 configurable parameters
+Go to **Settings → Secrets and variables → Actions → Variables** and add:
 
-**Operations**
-- Multi-org scanning with verified-only filtering
-- Automated GitHub issue creation
-- Regex-based false positive suppression
-- Comprehensive summaries with metrics
-
-## Performance
-
-| Org Size | Before | After | Improvement |
-|----------|--------|-------|-------------|
-| 25 repos | 3-5 min | 1-2 min | 60% faster |
-| 150 repos | 8-12 min | 2-3 min | 75% faster |
-| 500 repos | 15-25 min | 3-5 min | 80% faster |
-| 1500 repos | 30-60 min | 5-10 min | 83% faster |
-
-## Configuration
-
-### Repository Setup
-
-Configure these in your GitHub repository settings:
-
-#### Secrets (Required)
-Go to **Settings → Secrets and variables → Actions → New repository secret**:
-
-**Authentication Method 1: GitHub App** (Recommended for enterprise)
-- **`GH_APP_ID`**: GitHub App ID
-- **`GH_APP_PRIVATE_KEY`**: GitHub App private key (PEM format)
-- **`GH_APP_INSTALLATION_ID`**: GitHub App installation ID
-- See **[GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md)** for GitHub App setup instructions
-- Benefits: Higher rate limits (15k/hour for enterprise), better security, org-level management
-
-**Authentication Method 2: Personal Access Token** (Fallback)
-- **`GH_PAT`**: GitHub Personal Access Token with `repo` + `read:org` scopes
-- See **[SETUP.md](SETUP.md)** for PAT creation instructions
-- Used automatically if GitHub App credentials are not available
-
-#### Variables (Optional)
-Go to **Settings → Secrets and variables → Actions → Variables tab → New repository variable**:
-
-Priority: **Manual Input** > **Repository Variable** > **Hardcoded Default**
-
-Key variables:
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TRUFFLEHOG_ORGS` | trufflesecurity,gitleaks | Organizations to scan |
-| `DEFAULT_REPO_VISIBILITY` | public | Repo visibility (public/private/all) |
-| `DEFAULT_SCAN_RESULTS` | all | Results filter |
-| `TRUFFLEHOG_ISSUES_ORGS` | (empty) | Orgs for issue creation |
-
-See **[CONFIGURATION.md](CONFIGURATION.md)** for complete variable reference.
-
-#### Cron Schedule
-Default: **Every Sunday at 6 PM UTC**
-
-To modify, edit `.github/workflows/trufflehog-org-scan.yml`:
-```yaml
-schedule:
-  - cron: '0 18 * * 0'  # Sunday 6 PM UTC
+```
+TRUFFLEHOG_ORGS = org1,org2,org3
 ```
 
-Common schedules:
-- Daily at midnight: `'0 0 * * *'`
-- Every Monday 9 AM: `'0 9 * * 1'`
-- Twice weekly (Mon/Thu): `'0 0 * * 1,4'`
+### 3. Run the Scan
 
-#### False Positives
-Configure regex patterns to exclude known false positives:
+**Actions → TruffleHog Org Scan → Run workflow**
 
-**File**: `.github/trufflehog/false_positives.txt`
+The workflow runs automatically every **Sunday at 10 AM PST** and can be triggered manually at any time.
 
-Add newline-delimited regex patterns (lines starting with `#` are comments):
-```
-# Example placeholder patterns
-\bexample(_|-)?(user|username|token|password)\b
-postgres://username:password@hostname:\d+/
-```
+### 4. Review Results
 
-Patterns match against: `detector=... | verified=... | repo=... | file=... | redacted=...`
+- **Workflow summary** — metrics, severity breakdown, per-repo findings (visible on the Actions run page)
+- **GitHub issues** — created automatically when `open_issues: true` is enabled
+- **Artifacts** — raw NDJSON findings downloadable from each run
 
-### Workflow Inputs
+---
 
-11 configurable inputs via Actions UI:
-
-**Basic**: `org_names`, `open_issues`, `issues_creation_orgs`, `repo_visibility`
-**Scan Mode**: `deep_scan` (enables full branch/history scan)
-**Performance**: `scan_parallel`, `per_repo_timeout`, `scan_results`
-**Sharding**: `shard_cap`, `repos_per_shard`
-**Strategy**: `branch_strategy`, `scan_mode`, `branch_lookback_days`, `scan_lookback_days`
-**Advanced**: `adaptive_timeout`, `skip_stale_branches`, `max_finding_log_lines`
-
-See **[CONFIGURATION.md](CONFIGURATION.md)** for examples (daily, weekly, deep scans, large orgs).
-
-### Default Behavior
-
-| Setting | Default | Notes |
-|---------|---------|-------|
-| Organizations | trufflesecurity, gitleaks | Public test repos for validation |
-| Visibility | public | No org membership required |
-| Results | all | Shows verified + unverified findings |
-| Branch Strategy | main-recent | Default + branches active in last 30 days |
-| Scan Mode | recent | Last 7 days of commits |
-
-**Public-only scans** skip org membership checks, allowing you to scan any public org.
-
-See **[CONFIGURATION.md](CONFIGURATION.md)** for all defaults and override options.
-
-## Architecture
+## How It Works
 
 ```mermaid
 flowchart TD
-    Start([Workflow Triggered]) --> ResolveMatrix[1. resolve-matrix<br/>Parse org names from input/variable]
-
-    ResolveMatrix --> Plan[2. plan<br/>Count repos per org<br/>Calculate optimal shard count<br/>Output task matrix]
-
-    Plan --> ScanOrg1[3a. scan-org shard 1]
-    Plan --> ScanOrg2[3b. scan-org shard 2]
-    Plan --> ScanOrg3[3c. scan-org shard N]
-
-    ScanOrg1 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
-    ScanOrg2 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
-    ScanOrg3 --> |Load TruffleHog image cached<br/>Enumerate repos for shard<br/>Scan repos concurrently<br/>Upload per-shard artifacts| Summarize
-
-    Summarize[4. summarize-org per org<br/>Download all shard artifacts<br/>Merge NDJSON files<br/>Filter false positives<br/>Generate summary<br/>Create issues optional]
-
-    Summarize --> WorkflowSummary[5. workflow-summary<br/>Show configuration used<br/>Display performance metrics<br/>Link to per-org summaries]
-
-    WorkflowSummary --> End([Workflow Complete])
+    Start([Workflow Triggered]) --> Plan[1. plan<br/>Count repos per org<br/>Calculate optimal shards]
+    Plan --> S1[2a. scan shard 1]
+    Plan --> S2[2b. scan shard 2]
+    Plan --> SN[2c. scan shard N]
+    S1 --> Summarize[3. summarize-org<br/>Merge NDJSON · Filter FPs<br/>Generate summary · Create issues]
+    S2 --> Summarize
+    SN --> Summarize
+    Summarize --> WS[4. workflow-summary<br/>Config table · Metrics · Links]
+    WS --> End([Complete])
 
     style Start fill:#2e7d32,stroke:#1b5e20,color:#fff
     style End fill:#2e7d32,stroke:#1b5e20,color:#fff
-    style ResolveMatrix fill:#1976d2,stroke:#0d47a1,color:#fff
-    style Plan fill:#f57c00,stroke:#e65100,color:#fff
-    style ScanOrg1 fill:#7b1fa2,stroke:#4a148c,color:#fff
-    style ScanOrg2 fill:#7b1fa2,stroke:#4a148c,color:#fff
-    style ScanOrg3 fill:#7b1fa2,stroke:#4a148c,color:#fff
+    style Plan fill:#1976d2,stroke:#0d47a1,color:#fff
+    style S1 fill:#7b1fa2,stroke:#4a148c,color:#fff
+    style S2 fill:#7b1fa2,stroke:#4a148c,color:#fff
+    style SN fill:#7b1fa2,stroke:#4a148c,color:#fff
     style Summarize fill:#c2185b,stroke:#880e4f,color:#fff
-    style WorkflowSummary fill:#0097a7,stroke:#006064,color:#fff
+    style WS fill:#0097a7,stroke:#006064,color:#fff
 ```
 
-**Sharding**: Deterministic modulo distribution (default) or size-based round-robin for load balancing.
+**Sharding**: Repos are distributed across parallel shards (default: modulo distribution). Each shard scans its repos concurrently, then uploads NDJSON artifacts. The summarize job merges results, deduplicates, and optionally creates issues.
+
+### Performance
+
+| Org Size | Standard Scan | With Sharding | Improvement |
+|----------|--------------|---------------|-------------|
+| 25 repos | 3-5 min | 1-2 min | ~60% |
+| 150 repos | 8-12 min | 2-3 min | ~75% |
+| 500 repos | 15-25 min | 3-5 min | ~80% |
+| 1500 repos | 30-60 min | 5-10 min | ~83% |
+
+---
+
+## Repository Structure
+
+```
+.github/
+  dependabot.yml              # Automated dependency updates (pip + github-actions)
+  trufflehog/
+    false_positives.txt        # Regex patterns for false-positive suppression
+  workflows/
+    trufflehog-org-scan.yml    # Main org-wide scan workflow
+    self-scan.yml              # Self-test scan against this repo
+    pr-validation.yml          # 6-stage PR gate
+    lint-workflows.yml         # actionlint + ghalint
+    security-baseline-check.yml # Permissions/SHA/timeouts audit
+scripts/
+  deploy.py                   # Deployment helper (test fixture)
+test/
+  fixtures/                   # Intentional test secrets for validation
+  test-config.json            # Test configuration with sample credentials
+trufflehog_scanner.py         # Main scanner script (~1550 lines)
+test_trufflehog_scanner.py    # Unit tests (122 tests)
+requirements.txt              # Python dependencies (PyJWT, cryptography, pytest)
+```
+
+---
+
+## Workflows
+
+All actions are **SHA-pinned** with `persist-credentials: false` on every checkout step.
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| **trufflehog-org-scan** | Schedule (Sun 10 AM PST) + manual | Main org-wide secret scanning |
+| **self-scan** | Every push + manual | End-to-end validation against this repo's test fixtures |
+| **pr-validation** | Pull requests + push to main | 6-stage gate: actionlint, yamllint, SHA-pinning, permissions, Python syntax, summary |
+| **lint-workflows** | PR/push on workflow file changes | actionlint + ghalint validation |
+| **security-baseline-check** | PR on workflow file changes | Permissions, SHA-pinning, timeouts, secrets audit |
+
+**Dependabot** is configured for both `pip` and `github-actions` ecosystems (weekly updates).
+
+---
+
+## Scanner Features
+
+The `trufflehog_scanner.py` script processes TruffleHog NDJSON output into actionable GitHub issues and summaries.
+
+| Feature | Description |
+|---------|-------------|
+| **Severity classification** | Maps 17 detector types to 4 levels: CRITICAL, HIGH, MEDIUM, LOW |
+| **Detector-specific remediation** | 12 detector types with step-by-step rotation guides embedded in issues |
+| **Hash-based deduplication** | Deterministic SHA-256 of findings prevents duplicate issues across runs |
+| **Verified + unverified tracking** | Full breakdown in summaries; issues created only for verified findings |
+| **POST-first label strategy** | Creates labels via POST, falls back gracefully on 422 (already exists) |
+| **Single-pass NDJSON processing** | One file read for all summary stats and breakdowns |
+| **False-positive suppression** | Regex patterns from `.github/trufflehog/false_positives.txt` |
+| **Concurrent issue creation** | ThreadPoolExecutor with configurable worker count |
+| **Target repo override** | Consolidate all findings into a single repo (useful for testing) |
+| **GitHub App + PAT auth** | Automatic JWT token generation for GitHub App, PAT as fallback |
+
+### Scanner CLI Reference
+
+```
+trufflehog_scanner.py [options]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--ndjson PATH` | Input NDJSON file from TruffleHog | (required) |
+| `--org NAME` | Organization name (for summary labels) | — |
+| `--run-url URL` | Link to the workflow run | — |
+| `--scanner-repo OWNER/REPO` | Repository with remediation docs (linked in issues) | — |
+| `--dry-run` | Log actions without creating issues or calling GitHub API | `false` |
+| `--write-summary` | Write markdown to `$GITHUB_STEP_SUMMARY` | `false` |
+| `--include-unverified` | Process unverified findings (appear in summary, not issues) | `false` |
+| `--target-repo OWNER/REPO` | Create all issues in this repo instead of per-finding repo | — |
+| `--force-create` | Skip deduplication checks and always create issues | `false` |
+| `--summary-detailed` | Include per-finding rows in the workflow summary | `false` |
+| `--summary-detailed-per-repo N` | Max detailed rows per repo | `10` |
+| `--summary-detailed-max N` | Max total detailed rows | `300` |
+| `--errors-ndjson PATH` | Path to scan errors NDJSON file | — |
+| `--exclude-patterns-file PATH` | File with false-positive regex patterns | — |
+| `--labels CSV` | Extra labels to add to issues | — |
+| `--title-prefix TEXT` | Prefix for issue titles | `[TruffleHog]` |
+| `--max-workers N` | Concurrent issue creation threads | `4` |
+| `--log-level LEVEL` | Logging level | `INFO` |
+| `--validate` | Validate inputs and exit | `false` |
+
+---
 
 ## Issue Creation
 
-Set `open_issues: true` to enable automated issue creation.
+Enable with `open_issues: true` in the workflow dispatch UI, or set `DEFAULT_OPEN_ISSUES: true` as a repository variable.
 
-**Format**: `[TruffleHog] Secrets scan report - YYYY-MM-DD`
-**Deduplication**: Checks for existing issues within 7 days
-**Labels**: `security`, `secrets`, `tool:trufflehog`, `needs-triage`, detector-specific, severity-based
+**Title format**: `[TruffleHog] Secrets scan report (<hash>)`
+- The `<hash>` is a deterministic SHA-256 of the findings set — same findings always produce the same title.
 
-## Remediation
+**Labels**: `security`, `tool:trufflehog`, `<highest-severity>` (e.g. `sec:critical`), `needs-triage`
 
-When secrets are found:
+**Deduplication**: If an issue with the same hash already exists (open or closed), no duplicate is created.
 
-1. **Rotate credentials immediately** (assume compromised)
-2. Remove from current files
-3. Purge from git history (rebase for recent, git-filter-repo for old)
-4. Force push and notify team
-5. Add prevention measures
+**Issue body includes**:
+- Severity badge (🔴 CRITICAL / 🟠 HIGH / 🟡 MEDIUM / 🟢 LOW) and scan timestamp
+- Findings table: detector, file, line, commit SHA, verified status, redacted preview, clickable link
+- Detector-specific remediation steps (AWS, GCP, Azure, GitHub, Slack, SSH, Stripe, SendGrid, Kubernetes, Docker, Twilio, Private Key)
+- Git history cleanup commands (rebase + git-filter-repo)
+- False-positive suppression guide with file pattern example
 
-See **[REMEDIATION.md](REMEDIATION.md)** for complete guide with git-filter-repo instructions.
+> Issues are created **only for verified findings**. Unverified findings appear in the workflow summary.
+
+### Restricting Issue Creation to Specific Orgs
+
+Set the `TRUFFLEHOG_ISSUES_ORGS` variable (comma-separated) to limit which organizations receive issues. Leave empty or unset to create issues in all scanned orgs.
+
+---
+
+## Workflow Summary
+
+Every scan run generates a `GITHUB_STEP_SUMMARY` (visible on the Actions run page):
+
+| Section | Content |
+|---------|---------|
+| **Metrics** | Total findings, verified count, unverified count, excluded FPs, malformed lines |
+| **Severity breakdown** | Verified vs. unverified per level (CRITICAL / HIGH / MEDIUM / LOW) |
+| **By repository** | Verified, unverified, and total per repo |
+| **By detector** | Same breakdown per detector type |
+| **Top offenders** | Repos with ≥ 5 verified or ≥ 10 combined findings |
+| **Detailed verified** | Clickable file/line links for each verified finding (when `--summary-detailed`) |
+| **Detailed unverified** | Collapsible section with all unverified findings |
+| **Errors** | API or scan errors encountered during the run |
+
+---
+
+## Configuration Reference
+
+### Workflow Inputs (via Actions UI)
+
+Inputs are available when running the workflow manually from the Actions tab.
+
+#### Basic
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `org_names` | (from `TRUFFLEHOG_ORGS` variable) | Comma-separated organizations to scan |
+| `open_issues` | `false` | Create GitHub issues for verified findings |
+| `issues_creation_orgs` | (empty = all) | Restrict issue creation to these orgs |
+
+#### Scan Strategy
+
+| Input | Options | Default |
+|-------|---------|---------|
+| `deep_scan` | `true` / `false` | `false` — when `true`, scans ALL branches + full history |
+| `branch_strategy` | `all`, `main-only`, `main-recent`, `protected` | `main-recent` |
+| `scan_mode` | `full`, `recent`, `incremental` | `recent` |
+| `scan_lookback_days` | 1, 3, 7, 14, 30 | `7` |
+| `branch_lookback_days` | 7, 14, 30, 60, 90 | `30` |
+| `scan_results` | `verified`, `verified,unknown`, `verified,unknown,unverified` | `verified,unknown` |
+
+#### Performance & Sharding
+
+| Input | Options | Default |
+|-------|---------|---------|
+| `scan_parallel` | 4, 8, 12, 16 | `8` |
+| `per_repo_timeout` | 3m, 5m, 10m, 15m | `5m` |
+| `shard_cap` | 5, 10, 15, 20 | `10` |
+| `repos_per_shard` | 25, 50, 75, 100 | `50` |
+| `adaptive_timeout` | `true` / `false` | `true` (2-15m based on repo size) |
+| `skip_stale_branches` | `true` / `false` | `true` |
+
+### Repository Variables
+
+Set in **Settings → Secrets and variables → Actions → Variables**. These override hardcoded defaults; manual inputs override variables.
+
+**Priority**: Manual Input > Repository Variable > Hardcoded Default
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRUFFLEHOG_ORGS` | — | Default orgs to scan |
+| `TRUFFLEHOG_ISSUES_ORGS` | (empty = all) | Allow-list for issue creation |
+| `TRUFFLEHOG_VERSION` | `3.92.5` | TruffleHog version |
+| `TRUFFLEHOG_IMAGE` | `ghcr.io/trufflesecurity/trufflehog:3.92.5` | Docker image |
+| `TRUFFLEHOG_CACHE_FILE` | `.trufflehog_cache/trufflehog-3.92.5.tar` | Image cache path |
+| `GITHUB_API` | `https://api.github.com` | API endpoint (for GitHub Enterprise) |
+| `DEFAULT_SCAN_RESULTS` | `verified,unknown` | Default results filter |
+| `DEFAULT_BRANCH_STRATEGY` | `main-recent` | Default branch strategy |
+| `DEFAULT_SCAN_MODE` | `recent` | Default scan mode |
+| `DEFAULT_BRANCH_LOOKBACK_DAYS` | `30` | Default branch lookback |
+| `DEFAULT_SCAN_LOOKBACK_DAYS` | `7` | Default scan lookback |
+| `DEFAULT_OPEN_ISSUES` | `false` | Auto-create issues |
+| `DEFAULT_DEEP_SCAN` | `false` | Enable deep scan by default |
+| `SHARD_CAP` | `10` | Max shards per org |
+| `REPOS_PER_SHARD` | `50` | Target repos per shard |
+| `SCAN_PAR` | `8` | Concurrent scans per shard |
+| `SIZE_BASED_SHARDING` | `false` | Use size-based assignment |
+| `PER_REPO_TIMEOUT` | `5m` | Per-repo timeout |
+| `ADAPTIVE_TIMEOUT` | `true` | Enable adaptive timeouts |
+| `MAX_REPO_SIZE_KB` | `0` (unlimited) | Skip repos exceeding this size |
+| `MAX_FINDING_LOG_LINES` | `300` | Max preview lines |
+| `ALLOW_VER_OVERLAP` | `true` | Allow verification overlap |
+| `EXCLUDE_GENERIC` | `false` | Exclude generic detectors |
+
+### Cron Schedule
+
+Default: **Every Sunday at 6 PM UTC (10 AM PST)**
+
+```yaml
+schedule:
+  - cron: '0 18 * * 0'
+```
+
+Common alternatives:
+- Daily at midnight UTC: `'0 0 * * *'`
+- Every Monday 9 AM UTC: `'0 9 * * 1'`
+- Twice weekly (Mon/Thu): `'0 0 * * 1,4'`
+
+### False-Positive Suppression
+
+Add regex patterns to `.github/trufflehog/false_positives.txt` (one per line, `#` for comments):
+
+```
+# Placeholder credentials in docs/examples
+\bexample(_|-)?(user|username|token|password)\b
+postgres://username:password@hostname:\d+/
+
+# Test fixture files
+file=.*test/fixtures/.*
+```
+
+Patterns match against: `detector=<name> | verified=<bool> | repo=<owner/name> | file=<path> | redacted=<token>`
+
+See [CONFIGURATION.md](CONFIGURATION.md) for preset examples (daily, weekly, deep scan, large orgs).
+
+---
+
+## Running Locally
+
+### Dry-Run (No Issues Created)
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run scanner against an NDJSON file
+python3 trufflehog_scanner.py \
+  --ndjson findings.ndjson \
+  --org my-org \
+  --dry-run \
+  --write-summary \
+  --include-unverified
+```
+
+### Generate NDJSON from a Repo
+
+```bash
+docker run --rm -v "$PWD:/work" \
+  ghcr.io/trufflesecurity/trufflehog:3.92.5 \
+  github --repo "https://github.com/owner/repo" --token "$GH_PAT" --json \
+  > findings.ndjson
+```
+
+### Force Issue Creation (Skip Dedup)
+
+```bash
+python3 trufflehog_scanner.py \
+  --ndjson findings.ndjson \
+  --org my-org \
+  --force-create \
+  --target-repo owner/test-repo
+```
+
+### Consolidate into a Single Repo
+
+```bash
+python3 trufflehog_scanner.py \
+  --ndjson findings.ndjson \
+  --org my-org \
+  --target-repo owner/security-findings \
+  --include-unverified \
+  --write-summary
+```
+
+---
 
 ## Testing
 
-**Self-Test** (default): Run workflow without setting `TRUFFLEHOG_ORGS` - scans public test repos:
-- `trufflesecurity/test_keys` - AWS creds, SSH key, auth URI
-- `gitleaks/fake-leaks` - Various test secrets
+### Unit Tests
 
-**Self-Scan**: Runs on every push, scans this repo's test fixtures in `test/fixtures/`
-
-**Manual Run**: Actions → TruffleHog Org Scan → Run workflow
-
-**Local Testing**:
 ```bash
-# Test scanner
-python3 trufflehog_scanner.py --ndjson findings.ndjson --org test-org --dry-run
-
-# Generate test data
-docker run --rm -v "$PWD:/work" ghcr.io/trufflesecurity/trufflehog:3.90.6 \
-  github --repo "https://github.com/owner/repo" --token "$GH_PAT" --json
+pip install -r requirements.txt
+python3 -m pytest test_trufflehog_scanner.py -v
 ```
 
-**Workflow Summary**: Both workflows display findings breakdown (Total/Verified/Unverified) and top detector types in the GitHub Actions summary.
+**122 tests** covering: severity classification, label generation, hash deduplication, NDJSON loading,
+issue body generation, summary output, GHClient API calls, rate limiting, and end-to-end `process_repo` flows.
+
+### Self-Scan Workflow
+
+The `self-scan` workflow runs on every push and scans this repository's `test/fixtures/` directory.
+It validates:
+- TruffleHog detects the expected test secrets (minimum 20 findings)
+- The 4-job pipeline (plan → scan → summarize → workflow-summary) completes successfully
+- The scanner script processes findings correctly with `--include-unverified --target-repo --force-create`
+
+Trigger manually: **Actions → Self-Scan Test → Run workflow**
+
+### Test Fixtures
+
+The `test/fixtures/` directory contains **intentional fake secrets** across 6 file types:
+
+| File | Secrets | Types |
+|------|---------|-------|
+| `secrets.txt` | AWS keys, GitHub tokens, Slack tokens, DB credentials | Multi-format plaintext |
+| `sample_script.py` | AWS, GitHub, Stripe, SendGrid keys | Python variables |
+| `dotenv.sample` | Database, API keys, JWT secrets | `.env` format |
+| `gcp-service-account.json` | GCP service account private key | JSON key file |
+| `test_rsa_key.pem` | RSA private key | PEM format |
+| `../test-config.json` | AWS, GitHub, Stripe, Slack, GCP, DB credentials | JSON config |
+
+See [TEST_FIXTURES.md](TEST_FIXTURES.md) for full details.
+
+---
+
+## Remediating Discovered Secrets
+
+When the scanner finds secrets:
+
+1. **Rotate/revoke immediately** — assume every detected secret is compromised
+2. **Remove from current files** — replace with environment variables or secret manager references
+3. **Purge from git history** — use `git rebase -i` (recent) or `git-filter-repo` (old commits)
+4. **Force push** — coordinate with team, then `git push --force-with-lease`
+5. **Verify cleanup** — re-run TruffleHog to confirm removal
+
+Created issues include detector-specific rotation steps for **12 detector types** (AWS IAM, GCP service accounts, Azure, GitHub tokens, Slack, SSH, Stripe, SendGrid, Kubernetes, Docker, Twilio, Private Key).
+
+See [REMEDIATION.md](REMEDIATION.md) for the complete guide with commands.
+
+---
 
 ## Troubleshooting
 
-**Scans too slow?** Reduce branch scope, increase parallelism
-**Missing findings?** Use `deep_scan: true`, expand time windows
-**Rate limits?** Reduce concurrency, lower shard count
-**Timeouts?** Enable `adaptive_timeout`, increase timeout
+| Problem | Solution |
+|---------|----------|
+| **Scans too slow** | `branch_strategy: main-only`, increase `scan_parallel`, enable `adaptive_timeout` |
+| **Missing findings** | `deep_scan: true`, `scan_mode: full`, increase lookback windows |
+| **Rate limits** | Reduce `scan_parallel` to 4, lower `shard_cap`, stagger org scans |
+| **Timeouts** | Enable `adaptive_timeout`, increase `per_repo_timeout`, set `max_repo_size_kb` |
+| **401/403 errors** | Verify token scopes (`repo` + `read:org`), check expiration, confirm org membership |
+| **No issues created** | Set `open_issues: true`, verify token has Issues (Read/Write), check `TRUFFLEHOG_ISSUES_ORGS` |
+| **Verify setup works** | Run `self-scan` workflow manually — validates TruffleHog + scanner end-to-end |
 
-See **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for detailed solutions.
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed solutions and performance tuning.
 
-## Documentation
+---
 
-**Setup & Configuration**
-- [SETUP.md](SETUP.md) - PAT creation, org config, troubleshooting
-- [CONFIGURATION.md](CONFIGURATION.md) - Input reference, examples
+## Documentation Index
 
-**Operations**
-- [REMEDIATION.md](REMEDIATION.md) - Secrets remediation guide
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Performance tuning, issue resolution
-
-**Technical Reference**
-- [PERMISSION_ANALYSIS.md](PERMISSION_ANALYSIS.md) - API endpoints, permissions
-- [TEST_FIXTURES.md](TEST_FIXTURES.md) - Test secrets documentation
+| Document | Description |
+|----------|-------------|
+| [SETUP.md](SETUP.md) | Authentication setup (GitHub App overview, PAT creation, org configuration) |
+| [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) | GitHub App authentication — creation, permissions, installation |
+| [CONFIGURATION.md](CONFIGURATION.md) | Preset examples (daily, weekly, deep scan, large orgs, baseline) |
+| [REMEDIATION.md](REMEDIATION.md) | Step-by-step secrets remediation with git-filter-repo |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Performance tuning, common issues, monitoring |
+| [TEST_FIXTURES.md](TEST_FIXTURES.md) | Test secrets documentation and validation |
 
 ## Resources
 
 - [TruffleHog OSS](https://github.com/trufflesecurity/trufflehog)
-- [GitHub Actions Docs](https://docs.github.com/en/actions)
-- [Fine-Grained PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
-- [Classic PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic)
+- [GitHub Actions Documentation](https://docs.github.com/en/actions)
+- [Removing Sensitive Data from a Repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
+- [GitHub Secret Scanning](https://docs.github.com/en/code-security/secret-scanning)

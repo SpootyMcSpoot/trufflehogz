@@ -4,6 +4,7 @@ Unit tests for trufflehog_scanner.py
 Run with: pytest test_trufflehog_scanner.py -v
 """
 
+import json
 import os
 import re
 import tempfile
@@ -24,13 +25,21 @@ from trufflehog_scanner import (
     commit_sha,
     shortpath,
     line_link,
+    blame_link,
     normalize_detector,
     labels_for_items,
+    highest_severity,
     make_finding_key,
     compose_match_string,
     is_excluded,
     iter_ndjson,
     compute_findings_hash,
+    load_findings,
+    repo_is_actionable,
+    build_issue_body,
+    write_markdown_summary,
+    DETECTOR_REMEDIATION,
+    DETECTOR_SEVERITY,
     RateLimiter,
 )
 
@@ -259,6 +268,33 @@ class TestLineLink:
         assert "path%20with%20spaces" in link
 
 
+class TestBlameLink:
+    """Tests for blame_link function."""
+
+    def test_full_blame_with_commit_and_line(self):
+        link = blame_link("owner/repo", "abc123", "src/file.py", 42)
+        assert link == "https://github.com/owner/repo/blame/abc123/src/file.py#L42"
+
+    def test_blame_without_commit(self):
+        link = blame_link("owner/repo", None, "src/file.py", 42)
+        assert link == "https://github.com/owner/repo/blame/HEAD/src/file.py#L42"
+
+    def test_blame_without_line(self):
+        link = blame_link("owner/repo", "abc123", "src/file.py", None)
+        assert link == "https://github.com/owner/repo/blame/abc123/src/file.py"
+
+    def test_blame_missing_repo_returns_empty(self):
+        assert blame_link("", None, "file.py", 1) == ""
+
+    def test_blame_missing_path_returns_empty(self):
+        assert blame_link("owner/repo", "abc", "", 1) == ""
+
+    def test_blame_url_encodes_path(self):
+        link = blame_link("owner/repo", "abc", "path with spaces/file.py", 1)
+        assert "path%20with%20spaces" in link
+        assert "#L1" in link
+
+
 class TestNormalizeDetector:
     """Tests for normalize_detector function."""
 
@@ -293,17 +329,22 @@ class TestLabelsForItems:
         items = [{"detector": "AWS"}]
         labels = labels_for_items(items)
         assert "sec:critical" in labels
-        assert "secret:aws" in labels
         assert "needs-triage" in labels
+        assert "security" in labels
+        assert "tool:trufflehog" in labels
+        # Detector-type labels (e.g. secret:aws) removed in label reduction
+        assert "secret:aws" not in labels
 
     def test_multiple_findings_highest_severity(self):
+        """Only the single highest severity label should be present."""
         items = [
             {"detector": "GitHub"},  # sec:high
             {"detector": "AWS"},     # sec:critical
         ]
         labels = labels_for_items(items)
         assert "sec:critical" in labels
-        assert "sec:high" in labels
+        # Only highest severity kept — sec:high should NOT be present
+        assert "sec:high" not in labels
 
     def test_extra_labels_added(self):
         items = [{"detector": "GitHub"}]
@@ -483,17 +524,17 @@ class TestGHClient:
     """Integration tests for GHClient GitHub API wrapper."""
 
     def test_dry_run_mode_does_not_call_api(self):
-        """Dry run mode should not make actual API calls."""
+        """Dry run mode should not make actual API calls for mutating methods."""
         client = GHClient(token="fake-token", dry_run=True)
-        # In dry run, POST/PUT/PATCH/DELETE should return empty dict
-        result = client.request("POST", "/repos/test/test/issues", {"title": "test"})
+        # In dry run, POST/PUT/PATCH/DELETE should return empty dict without calling API
+        result = client.call("POST", "/repos/test/test/issues", {"title": "test"})
         assert result == {}
 
-    def test_dry_run_get_returns_empty_list(self):
-        """Dry run GET requests should return empty list."""
+    def test_dry_run_put_returns_empty(self):
+        """Dry run PUT requests should return empty dict without calling API."""
         client = GHClient(token="fake-token", dry_run=True)
-        result = client.request("GET", "/repos/test/test/issues", None)
-        assert result == []
+        result = client.call("PUT", "/repos/test/test/labels", {"name": "test"})
+        assert result == {}
 
     @mock.patch('trufflehog_scanner.urlopen')
     def test_successful_api_call(self, mock_urlopen):
@@ -523,9 +564,9 @@ class TestGHClient:
             fp=None
         )
 
-        client = GHClient(token="fake-token", dry_run=False, max_retries=1)
+        client = GHClient(token="fake-token", dry_run=False)
         with pytest.raises(HTTPError):
-            client.call("GET", "/repos/owner/nonexistent", None)
+            client.call("GET", "/repos/owner/nonexistent", None, max_retries=1)
 
     @mock.patch('trufflehog_scanner.urlopen')
     def test_rate_limit_retry(self, mock_urlopen):
@@ -549,8 +590,8 @@ class TestGHClient:
         
         mock_urlopen.side_effect = [rate_limit_error, mock_response]
 
-        client = GHClient(token="fake-token", dry_run=False, max_retries=3)
-        result = client.call("GET", "/repos/owner/repo", None)
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.call("GET", "/repos/owner/repo", None, max_retries=3, backoff_base=0.01)
         
         assert result["success"] is True
         assert mock_urlopen.call_count == 2
@@ -585,9 +626,10 @@ class TestGHClient:
         mock_urlopen.return_value = mock_response
 
         client = GHClient(token="fake-token", dry_run=False)
-        url = client.create_issue("owner/repo", "Test Title", "Test Body", ["bug"])
+        result = client.create_issue("owner/repo", "Test Title", "Test Body", ["bug"])
         
-        assert url == "https://github.com/owner/repo/issues/42"
+        assert result["html_url"] == "https://github.com/owner/repo/issues/42"
+        assert result["number"] == 42
 
     @mock.patch('trufflehog_scanner.urlopen')
     def test_repo_meta_returns_metadata(self, mock_urlopen):
@@ -605,11 +647,20 @@ class TestGHClient:
         assert meta["archived"] is False
         assert meta["full_name"] == "owner/repo"
 
-    def test_repo_meta_dry_run_returns_empty(self):
-        """Test that repo_meta in dry run returns empty dict."""
+    @mock.patch('trufflehog_scanner.urlopen')
+    def test_repo_meta_dry_run_still_fetches(self, mock_urlopen):
+        """Test that repo_meta in dry run still makes GET (read-only) calls."""
+        mock_response = mock.MagicMock()
+        mock_response.read.return_value = b'{"archived": false, "full_name": "owner/repo"}'
+        mock_response.__enter__ = mock.MagicMock(return_value=mock_response)
+        mock_response.__exit__ = mock.MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
         client = GHClient(token="fake-token", dry_run=True)
         meta = client.repo_meta("owner/repo")
-        assert meta == {}
+        # Dry run only blocks mutating ops; GET still goes through
+        assert meta["full_name"] == "owner/repo"
+        mock_urlopen.assert_called_once()
 
 
 class TestProcessRepo:
@@ -619,7 +670,7 @@ class TestProcessRepo:
     @mock.patch.object(GHClient, 'search_issue_by_title')
     @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
     @mock.patch.object(GHClient, 'create_issue')
-    @mock.patch.object(GHClient, 'ensure_labels')
+    @mock.patch.object(GHClient, 'create_labels_if_needed')
     def test_process_repo_creates_issue(self, mock_labels, mock_create, mock_hash_search, 
                                          mock_title_search, mock_meta):
         """Test that process_repo creates an issue when none exists."""
@@ -628,19 +679,20 @@ class TestProcessRepo:
         mock_meta.return_value = {"archived": False, "disabled": False}
         mock_title_search.return_value = False
         mock_hash_search.return_value = False
-        mock_create.return_value = "https://github.com/owner/repo/issues/1"
+        mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/1", "number": 1}
         mock_labels.return_value = None
 
         client = GHClient(token="fake-token", dry_run=False)
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
-            gh=client,
             repo="owner/repo",
             items=items,
-            run_url="https://github.com/owner/repo/actions/runs/123",
+            gh=client,
             title_prefix="[TruffleHog]",
-            extra_labels=[]
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            extra_labels=[],
+            dry_run=False
         )
         
         assert repo == "owner/repo"
@@ -660,12 +712,13 @@ class TestProcessRepo:
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
-            gh=client,
             repo="owner/repo",
             items=items,
-            run_url="https://github.com/owner/repo/actions/runs/123",
+            gh=client,
             title_prefix="[TruffleHog]",
-            extra_labels=[]
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            extra_labels=[],
+            dry_run=False
         )
         
         assert repo == "owner/repo"
@@ -675,7 +728,7 @@ class TestProcessRepo:
     @mock.patch.object(GHClient, 'search_issue_by_title')
     @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
     @mock.patch.object(GHClient, 'create_issue')
-    @mock.patch.object(GHClient, 'ensure_labels')
+    @mock.patch.object(GHClient, 'create_labels_if_needed')
     def test_process_repo_force_create_bypasses_dedup(self, mock_labels, mock_create, 
                                                         mock_hash_search, mock_title_search, mock_meta):
         """Test that force_create=True bypasses deduplication checks."""
@@ -684,19 +737,20 @@ class TestProcessRepo:
         mock_meta.return_value = {"archived": False, "disabled": False}
         mock_title_search.return_value = True  # Issue would normally exist
         mock_hash_search.return_value = True   # Hash would normally match
-        mock_create.return_value = "https://github.com/owner/repo/issues/2"
+        mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/2", "number": 2}
         mock_labels.return_value = None
 
         client = GHClient(token="fake-token", dry_run=False)
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
-            gh=client,
             repo="owner/repo",
             items=items,
-            run_url="https://github.com/owner/repo/actions/runs/123",
+            gh=client,
             title_prefix="[TruffleHog]",
+            run_url="https://github.com/owner/repo/actions/runs/123",
             extra_labels=[],
+            dry_run=False,
             force_create=True  # Force creation despite existing issues
         )
         
@@ -718,16 +772,493 @@ class TestProcessRepo:
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
-            gh=client,
             repo="owner/repo",
             items=items,
-            run_url="https://github.com/owner/repo/actions/runs/123",
+            gh=client,
             title_prefix="[TruffleHog]",
-            extra_labels=[]
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            extra_labels=[],
+            dry_run=False
         )
         
         assert repo == "owner/repo"
         assert created is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# New coverage: highest_severity, repo_is_actionable, load_findings,
+# build_issue_body, write_markdown_summary, DETECTOR_REMEDIATION map
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestHighestSeverity:
+    """Tests for highest_severity function."""
+
+    def test_single_critical(self):
+        items = [{"detector": "AWS"}]
+        assert highest_severity(items) == "sec:critical"
+
+    def test_mixed_returns_highest(self):
+        items = [
+            {"detector": "Slack"},       # sec:medium
+            {"detector": "GitHub"},      # sec:high
+            {"detector": "AWS"},         # sec:critical
+        ]
+        assert highest_severity(items) == "sec:critical"
+
+    def test_all_low(self):
+        items = [{"detector": "SomeUnknown"}, {"detector": "AnotherUnknown"}]
+        # Unknown detectors normalize to "Generic" → sec:medium default
+        assert highest_severity(items) == "sec:medium"
+
+    def test_empty_items_returns_low(self):
+        assert highest_severity([]) == "sec:low"
+
+    def test_high_without_critical(self):
+        items = [
+            {"detector": "GitHub"},     # sec:high
+            {"detector": "Slack"},      # sec:medium
+        ]
+        assert highest_severity(items) == "sec:high"
+
+
+class TestRepoIsActionable:
+    """Tests for repo_is_actionable function."""
+
+    def test_normal_repo(self):
+        assert repo_is_actionable({"archived": False, "has_issues": True}) is True
+
+    def test_archived_repo(self):
+        assert repo_is_actionable({"archived": True}) is False
+
+    def test_issues_disabled(self):
+        assert repo_is_actionable({"archived": False, "has_issues": False}) is False
+
+    def test_none_meta(self):
+        assert repo_is_actionable(None) is False
+
+    def test_empty_meta(self):
+        assert repo_is_actionable({}) is False  # empty dict is falsy
+
+    def test_missing_has_issues_defaults_true(self):
+        # If has_issues is not in metadata, default to True (actionable)
+        assert repo_is_actionable({"archived": False}) is True
+
+
+class TestLoadFindings:
+    """Tests for load_findings function."""
+
+    def _write_ndjson(self, lines):
+        """Helper: write NDJSON lines to a temp file and return path."""
+        f = tempfile.NamedTemporaryFile(mode='w', suffix='.ndjson', delete=False)
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+        f.close()
+        return f.name
+
+    def test_loads_verified_only_by_default(self):
+        path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": False,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "b.py"}}}},
+        ])
+        try:
+            result = load_findings(path, [])
+            assert "owner/repo" in result
+            assert len(result["owner/repo"]) == 1
+            assert result["owner/repo"][0]["detector"] == "AWS"
+        finally:
+            os.unlink(path)
+
+    def test_include_unverified(self):
+        path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": False,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "b.py"}}}},
+        ])
+        try:
+            result = load_findings(path, [], include_unverified=True)
+            assert len(result["owner/repo"]) == 2
+        finally:
+            os.unlink(path)
+
+    def test_deduplication(self):
+        """Duplicate findings (same repo/detector/file/line/commit) should be collapsed."""
+        finding = {"DetectorName": "AWS", "Verified": True,
+                   "SourceMetadata": {"Data": {"Git": {
+                       "repository": "owner/repo", "file": "a.py",
+                       "line": 10, "commit": "abc123"}}}}
+        path = self._write_ndjson([finding, finding, finding])
+        try:
+            result = load_findings(path, [])
+            assert len(result["owner/repo"]) == 1
+        finally:
+            os.unlink(path)
+
+    def test_exclude_regex(self):
+        path = self._write_ndjson([
+            {"DetectorName": "EXAMPLE_DETECTOR", "Verified": True, "Redacted": "test",
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "a.py"}}}},
+        ])
+        try:
+            result = load_findings(path, [re.compile(r"EXAMPLE")])
+            assert len(result) == 0
+        finally:
+            os.unlink(path)
+
+    def test_allow_no_repo_groups_filesystem(self):
+        """Findings without repo metadata should be grouped under _filesystem_."""
+        path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True, "SourceMetadata": {"Data": {}}},
+        ])
+        try:
+            result = load_findings(path, [], allow_no_repo=True)
+            assert "_filesystem_" in result
+            assert len(result["_filesystem_"]) == 1
+        finally:
+            os.unlink(path)
+
+    def test_no_repo_skipped_without_allow(self):
+        path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True, "SourceMetadata": {"Data": {}}},
+        ])
+        try:
+            result = load_findings(path, [], allow_no_repo=False)
+            assert len(result) == 0
+        finally:
+            os.unlink(path)
+
+    def test_nonexistent_file(self):
+        result = load_findings("/tmp/nonexistent_12345.ndjson", [])
+        assert result == {}
+
+    def test_items_have_redacted_and_verified(self):
+        """Each loaded item should carry the redacted and verified fields."""
+        path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True, "Redacted": "AKIA***",
+             "SourceMetadata": {"Data": {"Git": {"repository": "o/r", "file": "f.py"}}}},
+        ])
+        try:
+            result = load_findings(path, [])
+            item = result["o/r"][0]
+            assert item["redacted"] == "AKIA***"
+            assert item["verified"] is True
+        finally:
+            os.unlink(path)
+
+
+class TestBuildIssueBody:
+    """Tests for build_issue_body function."""
+
+    def test_contains_severity_badge(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "CRITICAL" in body
+        assert "🔴" in body
+
+    def test_contains_findings_table(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 10, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "| Detector | File |" in body
+        assert "AWS" in body
+        assert "`a.py`" in body
+
+    def test_contains_remediation_steps(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "Remediation Steps" in body
+        assert "Rotate/Revoke" in body
+
+    def test_contains_detector_specific_remediation(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "AWS" in body
+        # AWS detector remediation should have IAM-related content
+        assert "IAM" in body or "aws" in body.lower()
+
+    def test_findings_hash_included(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1", findings_hash="deadbeef")
+        assert "deadbeef" in body
+        assert "deduplication" in body
+
+    def test_false_positive_guide(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "False Positive" in body
+
+    def test_redacted_preview(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc",
+                  "verified": True, "redacted": "AKIA***EXAMPLE"}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "AKIA***EXAMPLE" in body
+
+    def test_verified_checkmark(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "✅" in body
+
+    def test_unverified_question_mark(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": False}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "❓" in body
+
+    def test_scanner_repo_link(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1",
+                                scanner_repo="org/trufflehog")
+        assert "org/trufflehog" in body
+
+    def test_multiple_items(self):
+        items = [
+            {"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True},
+            {"detector": "GitHub", "file": "b.py", "line": 5, "commit": "def", "verified": True},
+        ]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        # Should say "2 verified secrets" or "2 findings"
+        assert "2" in body
+        assert "AWS" in body
+        assert "GitHub" in body
+
+    def test_security_notice_present(self):
+        items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "SECURITY NOTICE" in body
+
+    def test_blame_link_in_issue_body(self):
+        items = [{"detector": "AWS", "file": "src/creds.py", "line": 42, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
+        assert "[Blame](" in body
+        assert "/blame/abc123/src/creds.py#L42)" in body
+
+    def test_filesystem_links_use_target_repo_not_filesystem(self):
+        """Items with original_repo='_filesystem_' should use the issue repo for links."""
+        items = [{"detector": "AWS", "file": "/repo/secrets.txt", "line": 3, "commit": None,
+                  "verified": False, "original_repo": "_filesystem_"}]
+        body = build_issue_body("slac-it/trufflehog", items, "https://github.com/runs/1")
+        assert "_filesystem_" not in body
+        assert "slac-it/trufflehog" in body
+        assert "[Blame](https://github.com/slac-it/trufflehog/blame/HEAD/secrets.txt#L3)" in body
+
+
+class TestWriteMarkdownSummary:
+    """Tests for write_markdown_summary function."""
+
+    def _write_ndjson(self, lines):
+        f = tempfile.NamedTemporaryFile(mode='w', suffix='.ndjson', delete=False)
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+        f.close()
+        return f.name
+
+    def test_writes_to_step_summary(self):
+        """Summary should be written to GITHUB_STEP_SUMMARY file."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "a.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [])
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "test-org" in content
+            assert "owner/repo" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_severity_breakdown_table(self):
+        """Summary should include severity breakdown with Verified/Unverified columns."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": False,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "b.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [])
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "Findings by severity" in content
+            assert "Verified" in content
+            assert "Unverified" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_empty_ndjson(self):
+        """Empty NDJSON should produce a summary with zero counts."""
+        ndjson_path = self._write_ndjson([])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [])
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "**0**" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_filter_statistics(self):
+        """Summary should show excluded count when exclusions apply."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "EXAMPLE_DETECTOR", "Verified": True, "Redacted": "test",
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "a.py"}}}},
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "owner/repo", "file": "b.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [re.compile(r"EXAMPLE")])
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "false-positive" in content.lower() or "Filtered" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+
+    def test_unverified_repo_detector_crosstab(self):
+        """Summary should include unverified repo × detector cross-tab table."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": False,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": False,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "b.py"}}}},
+            {"DetectorName": "AWS", "Verified": False,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-b", "file": "c.py"}}}},
+            {"DetectorName": "GitHub", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "d.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [])
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "repo × detector" in content
+            assert "org/repo-a" in content
+            assert "org/repo-b" in content
+            # The cross-tab should show repo-a with AWS and Slack, repo-b with AWS
+            assert "AWS" in content
+            assert "Slack" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_by_repo_table_shows_collapsible_for_many_repos(self):
+        """When >50 repos have findings, excess should be in a collapsible section."""
+        findings = []
+        for i in range(60):
+            findings.append({
+                "DetectorName": "AWS", "Verified": False,
+                "SourceMetadata": {"Data": {"Git": {"repository": f"org/repo-{i:03d}", "file": "a.py"}}}
+            })
+        ndjson_path = self._write_ndjson(findings)
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [])
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "Show remaining 10 repositories" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_filesystem_findings_with_target_repo(self):
+        """Filesystem scan findings (no repo metadata) should appear in summary when target_repo is set."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "Postgres", "Verified": False,
+             "SourceMetadata": {"Data": {"Filesystem": {"file": "/repo/.env.example", "line": 24}}}},
+            {"DetectorName": "AWS", "Verified": False,
+             "SourceMetadata": {"Data": {"Filesystem": {"file": "/repo/secrets.txt", "line": 3}}}},
+            {"DetectorName": "SlackWebhook", "Verified": False,
+             "SourceMetadata": {"Data": {"Filesystem": {"file": "/repo/config.py", "line": 10}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="slac-it/trufflehog")
+            with open(summary_file.name) as f:
+                content = f.read()
+            # All 3 findings should be counted
+            assert "**3**" in content
+            assert "Unverified (informational) | **3**" in content
+            # The target repo should be used as the repo name
+            assert "slac-it/trufflehog" in content
+            # Detectors should appear
+            assert "Postgres" in content
+            assert "AWS" in content
+            assert "SlackWebhook" in content
+            # Without target_repo, findings would be skipped (0 count)
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_filesystem_findings_without_target_repo_skipped(self):
+        """Filesystem scan findings without target_repo should be skipped (no repo = skip)."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "Postgres", "Verified": False,
+             "SourceMetadata": {"Data": {"Filesystem": {"file": "/repo/.env", "line": 1}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "self-scan", [])
+            with open(summary_file.name) as f:
+                content = f.read()
+            # Finding should be skipped — 0 total
+            assert "**0**" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_filesystem_file_path_and_line_no(self):
+        """file_path() and line_no() should extract Filesystem metadata."""
+        obj = {"SourceMetadata": {"Data": {"Filesystem": {"file": "/repo/test.py", "line": 42}}}}
+        assert file_path(obj) == "/repo/test.py"
+        assert line_no(obj) == 42
+
+
+class TestDetectorRemediationMap:
+    """Validate DETECTOR_REMEDIATION and DETECTOR_SEVERITY coverage."""
+
+    def test_all_severity_detectors_have_remediation(self):
+        """Most detectors in DETECTOR_SEVERITY should have remediation guidance."""
+        # These detectors are recognized but don't yet have specific remediation steps
+        known_exceptions = {"Generic", "Private Key", "Docker", "JWT", "Mailchimp"}
+        for det in DETECTOR_SEVERITY:
+            if det not in known_exceptions:
+                assert det in DETECTOR_REMEDIATION, \
+                    f"Detector '{det}' has severity mapping but no remediation guidance"
+
+    def test_remediation_values_are_nonempty(self):
+        for det, guidance in DETECTOR_REMEDIATION.items():
+            assert isinstance(guidance, str), f"Remediation for '{det}' is not a string"
+            assert len(guidance.strip()) > 10, f"Remediation for '{det}' is too short"
+
+    def test_severity_values_are_valid(self):
+        valid_severities = {"sec:critical", "sec:high", "sec:medium", "sec:low"}
+        for det, sev in DETECTOR_SEVERITY.items():
+            assert sev in valid_severities, \
+                f"Detector '{det}' has invalid severity '{sev}'"
 
 
 if __name__ == "__main__":

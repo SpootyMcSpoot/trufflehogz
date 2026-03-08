@@ -2,17 +2,18 @@
 
 Configuration reference for TruffleHog Organization Scanner.
 
+See the [README](README.md) for a full configuration reference. This document focuses on preset examples and tuning guidance.
+
 ## Workflow Inputs
 
-11 configurable inputs via Actions UI (Run workflow button).
+Configurable inputs via the Actions UI (Run workflow button).
 
 ### Basic
 | Input | Options | Default | Description |
 |-------|---------|---------|-------------|
-| `org_names` | comma-separated | trufflesecurity,gitleaks | Organizations to scan |
+| `org_names` | comma-separated | (from var) | Organizations to scan |
 | `open_issues` | true/false | false | Create GitHub issues |
 | `issues_creation_orgs` | comma-separated | (empty) | Orgs for issue creation (empty = all) |
-| `repo_visibility` | public, all, private | public | Filter repos by visibility |
 
 ### Deep Scan
 | Input | Options | Default | Description |
@@ -26,7 +27,7 @@ Configuration reference for TruffleHog Organization Scanner.
 |-------|---------|---------|
 | `scan_parallel` | 4, 8, 12, 16 | 8 |
 | `per_repo_timeout` | 3m, 5m, 10m, 15m | 5m |
-| `scan_results` | all, verified+unknown, verified | all |
+| `scan_results` | verified, verified+unknown, all | verified+unknown |
 
 ### Sharding
 | Input | Options | Default |
@@ -51,53 +52,15 @@ Configuration reference for TruffleHog Organization Scanner.
 
 ## Repository Variables
 
-Override defaults via **Settings > Secrets and variables > Actions > Variables**:
+Override defaults via **Settings → Secrets and variables → Actions → Variables** (no workflow file edits needed).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRUFFLEHOG_ORGS` | trufflesecurity,gitleaks | Organizations to scan |
-| `DEFAULT_REPO_VISIBILITY` | public | Repo visibility filter |
-| `DEFAULT_SCAN_RESULTS` | all | Results filter |
-| `DEFAULT_BRANCH_STRATEGY` | main-recent | Branch strategy |
-| `DEFAULT_SCAN_MODE` | recent | Scan mode |
-| `DEFAULT_BRANCH_LOOKBACK_DAYS` | 30 | Branch lookback days |
-| `DEFAULT_SCAN_LOOKBACK_DAYS` | 7 | Scan lookback days |
-| `DEFAULT_OPEN_ISSUES` | false | Create issues by default |
-| `DEFAULT_DEEP_SCAN` | false | Enable deep scan by default |
-| `SHARD_CAP` | 10 | Max shards per organization |
-| `REPOS_PER_SHARD` | 50 | Target repos per shard |
-| `SCAN_PAR` | 8 | Concurrent scans per shard |
-| `PER_REPO_TIMEOUT` | 5m | Timeout per repository |
-| `ADAPTIVE_TIMEOUT` | true | Enable adaptive timeouts |
-| `SIZE_BASED_SHARDING` | false | Enable size-based sharding |
-| `MAX_REPO_SIZE_KB` | 0 | Max repo size (0=unlimited) |
-| `MAX_FINDING_LOG_LINES` | 300 | Max lines per finding log |
-| `TRUFFLEHOG_VERSION` | 3.92.5 | TruffleHog version |
-| `TRUFFLEHOG_IMAGE` | ghcr.io/.../3.92.5 | Docker image |
-| `GITHUB_API` | https://api.github.com | API endpoint |
-| `TRUFFLEHOG_ISSUES_ORGS` | (empty) | Orgs for issue creation |
+| `TRUFFLEHOG_VERSION` | `3.92.5` | TruffleHog version |
+| `SIZE_BASED_SHARDING` | `false` | Use size-based shard assignment |
+| `MAX_REPO_SIZE_KB` | `0` (unlimited) | Skip repos exceeding this size |
 
-## Visibility Behavior
-
-The `repo_visibility` setting controls which repos are scanned:
-
-| Value | Behavior |
-|-------|----------|
-| `public` | Only public repos. **No org membership required.** |
-| `private` | Only private repos. Requires org membership. |
-| `all` | All repos. Requires org membership for private repos. |
-
-**Public-only scans** (default) skip the org membership check, allowing you to scan public repos in any organization without being a member.
-
-## Hardcoded Settings
-
-Modify `.github/workflows/trufflehog-org-scan.yml` to change:
-
-| Setting | Value |
-|---------|-------|
-| `trufflehog_version` | 3.92.5 |
-| `enable_size_based_sharding` | false |
-| `max_repo_size_kb` | 0 (unlimited) |
+See [README.md — Repository Variables](README.md#repository-variables) for the complete list.
 
 ## Configuration Examples
 
@@ -150,32 +113,10 @@ max_finding_log_lines: 1000
 ```
 **Runtime**: 30-90 min | **Use case**: First comprehensive scan
 
-## Default Test Configuration
-
-When no `TRUFFLEHOG_ORGS` variable is set and no `org_names` input provided, the workflow scans public test repositories:
-
-| Org | Test Repo | Contents |
-|-----|-----------|----------|
-| trufflesecurity | test_keys | AWS creds, SSH key, auth URI |
-| gitleaks | fake-leaks | Various test secrets |
-
-Default settings for testing:
-- `repo_visibility: public` - scans only public repos
-- `scan_results: all` - shows verified and unverified findings
-
-## Workflow Summary
-
-The workflow generates a detailed summary in GitHub Actions showing:
-
-- **Findings table**: Total, Verified, Unverified counts
-- **Detector breakdown**: Top 10 detector types with counts
-- **Configuration**: All scan settings used
-- **Per-org summaries**: Detailed findings for each organization
-
 ---
 
 **See also**:
-- [README.md](README.md) - Overview
-- [SETUP.md](SETUP.md) - Setup guide
+- [README.md](README.md) - Overview and full configuration reference
+- [SETUP.md](SETUP.md) - Authentication setup
 - [REMEDIATION.md](REMEDIATION.md) - Secrets remediation
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Performance tuning
