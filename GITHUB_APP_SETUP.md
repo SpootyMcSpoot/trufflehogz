@@ -1,6 +1,6 @@
 # GitHub App Authentication Setup
 
-Guide for migrating from Personal Access Token (PAT) to GitHub App authentication.
+Guide for setting up GitHub App authentication for TruffleHog Organization Scanner.
 
 ## Why GitHub App?
 
@@ -95,181 +95,42 @@ Add three secrets:
 | `GH_APP_INSTALLATION_ID` | Your Installation ID |
 | `GH_APP_PRIVATE_KEY` | Contents of the `.pem` file |
 
-## Implementation Changes
+## How It Works
 
-### Python Script Updates
+GitHub App authentication is **already implemented** in the scanner. When secrets `GH_APP_ID`, `GH_APP_PRIVATE_KEY`, and `GH_APP_INSTALLATION_ID` are set, the scanner:
 
-Add GitHub App authentication support to `trufflehog_scanner.py`:
+1. Creates a JWT signed with the private key (10-minute lifetime)
+2. Exchanges the JWT for an installation access token (1-hour lifetime)
+3. Uses the installation token for both TruffleHog scanning and GitHub API calls (issue creation, dedup checks)
+4. Falls back to `GH_PAT` if app credentials are not available
 
-```python
-import jwt
-import time
-
-def get_github_app_token(app_id: str, private_key: str, installation_id: str) -> str:
-    """
-    Generate installation access token from GitHub App credentials.
-    
-    Returns: Installation access token (valid for 1 hour)
-    """
-    # Create JWT for app authentication
-    now = int(time.time())
-    payload = {
-        'iat': now,
-        'exp': now + (10 * 60),  # JWT expires in 10 minutes
-        'iss': app_id
-    }
-    
-    jwt_token = jwt.encode(payload, private_key, algorithm='RS256')
-    
-    # Exchange JWT for installation access token
-    GLOBAL_LIMITER.wait()
-    headers = {
-        'Authorization': f'Bearer {jwt_token}',
-        'Accept': 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-    }
-    
-    url = f"{API_BASE}/app/installations/{installation_id}/access_tokens"
-    req = Request(url, method='POST', headers=headers)
-    
-    with urlopen(req, timeout=DEFAULT_API_TIMEOUT_SEC) as resp:
-        data = json.loads(resp.read().decode('utf-8'))
-        return data['token']
-
-def get_auth_token() -> str:
-    """
-    Get authentication token from either GitHub App or PAT.
-    
-    Priority:
-    1. GitHub App (GH_APP_ID + GH_APP_PRIVATE_KEY + GH_APP_INSTALLATION_ID)
-    2. Classic PAT (GH_PAT)
-    """
-    app_id = os.environ.get('GH_APP_ID')
-    private_key = os.environ.get('GH_APP_PRIVATE_KEY')
-    installation_id = os.environ.get('GH_APP_INSTALLATION_ID')
-    
-    if app_id and private_key and installation_id:
-        logging.info("Authenticating with GitHub App")
-        return get_github_app_token(app_id, private_key, installation_id)
-    
-    pat = os.environ.get('GH_PAT')
-    if pat:
-        logging.info("Authenticating with PAT")
-        return pat
-    
-    raise ValueError("No authentication method available. Set either GH_PAT or GitHub App credentials.")
-```
-
-Update the API helper functions to use the new `get_auth_token()`:
-
-```python
-def api_call(method: str, url: str, headers: Optional[Dict] = None, 
-             data: Optional[bytes] = None, retries: int = DEFAULT_MAX_RETRIES) -> Any:
-    """Make authenticated API call with retry logic."""
-    token = get_auth_token()  # Get token dynamically
-    
-    if headers is None:
-        headers = {}
-    headers.update({
-        'Authorization': f'Bearer {token}',  # Works for both PAT and App tokens
-        'Accept': 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-    })
-    
-    # ... rest of existing retry logic
-```
-
-### Workflow Updates
-
-Update `.github/workflows/trufflehog-org-scan.yml`:
-
-```yaml
-env:
-  # GitHub App credentials (preferred)
-  GH_APP_ID: ${{ secrets.GH_APP_ID }}
-  GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
-  GH_APP_INSTALLATION_ID: ${{ secrets.GH_APP_INSTALLATION_ID }}
-  
-  # Fallback to PAT if app credentials not available
-  GH_PAT: ${{ secrets.GH_PAT }}
-```
-
-Update TruffleHog command to use app authentication:
-
-```bash
-# If using GitHub App, TruffleHog supports --token flag
-if [ -n "${GH_APP_ID}" ]; then
-  TOKEN=$(python3 -c "from trufflehog_scanner import get_auth_token; print(get_auth_token())")
-  trufflehog github --org="${ORG}" --token="${TOKEN}" ...
-else
-  # Fallback to PAT
-  trufflehog github --org="${ORG}" --token="${GH_PAT}" ...
-fi
-```
+The workflow automatically passes app credentials as environment variables — no configuration changes needed beyond adding the three secrets.
 
 ### Dependencies
 
-Add to `requirements.txt`:
+Already included in `requirements.txt`:
 
 ```
-PyJWT>=2.8.0
-cryptography>=41.0.0
-```
-
-Install in workflow:
-
-```yaml
-- name: Install Python dependencies
-  run: |
-    pip install --upgrade pip
-    pip install PyJWT cryptography
+PyJWT>=2.10.0
+cryptography>=45.0.0
 ```
 
 ## Testing
 
-### Local Testing
+### Verify Authentication Locally
 
 ```bash
 export GH_APP_ID="123456"
 export GH_APP_INSTALLATION_ID="789012"
 export GH_APP_PRIVATE_KEY="$(cat path/to/private-key.pem)"
 
+# Dry-run to test auth without creating issues
 python3 trufflehog_scanner.py --ndjson findings.ndjson --dry-run
 ```
 
-### Verify Authentication
+### Verify in Workflow
 
-```python
-# Test script
-import os
-from trufflehog_scanner import get_auth_token, api_call
-
-token = get_auth_token()
-print(f"Token obtained: {token[:20]}...")
-
-# Test API call
-user = api_call('GET', 'https://api.github.com/user')
-print(f"Authenticated as: {user['login']}")
-print(f"Rate limit: {user.get('rate_limit', 'N/A')}")
-```
-
-## Migration Strategy
-
-### Phase 1: Parallel Run
-- Keep existing PAT
-- Add GitHub App secrets
-- Code falls back to PAT if app auth fails
-- Monitor for 2-4 weeks
-
-### Phase 2: Validation
-- Verify app authentication working in logs
-- Check rate limits improved
-- Confirm issue creation working
-
-### Phase 3: Cutover
-- Remove fallback to PAT
-- Delete `GH_PAT` secret
-- Update documentation
+Run the self-scan workflow (**Actions → Self-Scan Test → Run workflow**). If it passes, authentication and scanning are working correctly.
 
 ## Troubleshooting
 

@@ -55,6 +55,14 @@ Performance optimization and issue resolution guide.
 - Many timeouts → Increase timeout or enable adaptive
 - Missing findings → Increase lookback or change strategy
 
+## Quick Diagnostics
+
+**Run the self-scan workflow** (**Actions → Self-Scan Test → Run workflow**) to validate end-to-end:
+- Confirms TruffleHog + scanner script are working correctly
+- Runs all 4 jobs (plan → scan → summarize → workflow-summary)
+- Should detect ≥ 20 test secrets from `test/fixtures/`
+- If self-scan passes but org-scan fails, the issue is likely auth or org-specific
+
 ## Common Issues
 
 **No findings but artifacts exist**
@@ -63,11 +71,12 @@ Performance optimization and issue resolution guide.
 - Check `scan_results` includes desired types
 
 **401/403 errors**
-- Classic: Verify `repo` + `read:org` scopes
-- Fine-grained: Verify Contents (Read) + Members (Read)
+- Classic PAT: Verify `repo` + `read:org` scopes
+- Fine-grained PAT: Verify Contents (Read) + Members (Read)
+- GitHub App: Verify App ID, private key format, installation ID, and Metadata (Read) permission
 - Check token expiration
 - Verify org access
-- See [SETUP.md](SETUP.md#troubleshooting)
+- See [SETUP.md](SETUP.md#troubleshooting) or [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md#troubleshooting)
 
 **Timeouts on specific repos**
 - Enable `adaptive_timeout: true`
@@ -100,7 +109,8 @@ Performance optimization and issue resolution guide.
 ---
 
 **See also**:
-- [README.md](README.md) - Overview
-- [SETUP.md](SETUP.md) - Setup guide
-- [CONFIGURATION.md](CONFIGURATION.md) - Configuration
+- [README.md](README.md) - Overview and full configuration reference
+- [SETUP.md](SETUP.md) - Authentication setup
+- [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) - GitHub App auth with troubleshooting
+- [CONFIGURATION.md](CONFIGURATION.md) - Preset examples
 - [REMEDIATION.md](REMEDIATION.md) - Secrets remediation

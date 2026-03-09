@@ -1,0 +1,24 @@
+# Semgrep SAST — replaces CodeQL default setup
+# Calls the reusable Semgrep workflow from slac-templates
+name: Semgrep SAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 4 * * 1"  # Weekly Monday 4:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    uses: slac-it/slac-templates/.github/workflows/semgrep-sast.yml@main
+    with:
+      config: "auto"
+      severity: "WARNING"
+      fail_on_findings: false
+      exclude_paths: "test/fixtures"

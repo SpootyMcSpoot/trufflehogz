@@ -2,9 +2,11 @@
 
 Configuration reference for TruffleHog Organization Scanner.
 
+See the [README](README.md) for a full configuration reference. This document focuses on preset examples and tuning guidance.
+
 ## Workflow Inputs
 
-10 configurable inputs via Actions UI (Run workflow button).
+Configurable inputs via the Actions UI (Run workflow button).
 
 ### Basic
 | Input | Options | Default | Description |
@@ -48,15 +50,17 @@ Configuration reference for TruffleHog Organization Scanner.
 | `skip_stale_branches` | true/false | true |
 | `max_finding_log_lines` | 50-1000 | 300 |
 
-## Hardcoded Settings
+## Repository Variables
 
-Modify `.github/workflows/trufflehog-org-scan.yml` to change:
+Override defaults via **Settings → Secrets and variables → Actions → Variables** (no workflow file edits needed).
 
-| Setting | Value |
-|---------|-------|
-| `trufflehog_version` | 3.90.6 |
-| `enable_size_based_sharding` | false |
-| `max_repo_size_kb` | 0 (unlimited) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRUFFLEHOG_VERSION` | `3.92.5` | TruffleHog version |
+| `SIZE_BASED_SHARDING` | `false` | Use size-based shard assignment |
+| `MAX_REPO_SIZE_KB` | `0` (unlimited) | Skip repos exceeding this size |
+
+See [README.md — Repository Variables](README.md#repository-variables) for the complete list.
 
 ## Configuration Examples
 
@@ -112,7 +116,7 @@ max_finding_log_lines: 1000
 ---
 
 **See also**:
-- [README.md](README.md) - Overview
-- [SETUP.md](SETUP.md) - Setup guide
+- [README.md](README.md) - Overview and full configuration reference
+- [SETUP.md](SETUP.md) - Authentication setup
 - [REMEDIATION.md](REMEDIATION.md) - Secrets remediation
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Performance tuning

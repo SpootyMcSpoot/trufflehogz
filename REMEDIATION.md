@@ -121,7 +121,7 @@ git clean -fdx
 **Verify**:
 ```bash
 docker run --rm -v "$PWD:/work" -w /work \
-  ghcr.io/trufflesecurity/trufflehog:3.90.6 \
+  ghcr.io/trufflesecurity/trufflehog:3.92.5 \
   git file:///work --only-verified
 ```
 
@@ -133,7 +133,7 @@ pip install pre-commit
 cat > .pre-commit-config.yaml <<EOF
 repos:
   - repo: https://github.com/trufflesecurity/trufflehog
-    rev: v3.90.6
+    rev: v3.92.5
     hooks:
       - id: trufflehog
         name: TruffleHog Secret Scan
@@ -184,7 +184,7 @@ echo ".env" >> .gitignore
 ---
 
 **See also**:
-- [README.md](README.md) - Overview
-- [SETUP.md](SETUP.md) - Setup guide
-- [CONFIGURATION.md](CONFIGURATION.md) - Configuration
+- [README.md](README.md) - Overview and full configuration reference
+- [SETUP.md](SETUP.md) - Authentication setup
+- [CONFIGURATION.md](CONFIGURATION.md) - Preset examples
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Performance tuning

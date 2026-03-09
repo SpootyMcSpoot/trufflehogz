@@ -224,7 +224,7 @@ def setup_logging(level: str = "INFO") -> None:
 
 # ---------------------------- Label taxonomy ----------------------------
 
-DEFAULT_LABELS = ["security", "secrets", "tool:trufflehog"]
+DEFAULT_LABELS = ["security", "tool:trufflehog"]
 SEVERITY_ORDER = ["sec:low", "sec:medium", "sec:high", "sec:critical"]
 
 DETECTOR_SEVERITY = {
@@ -267,6 +267,77 @@ DETECTOR_TYPES = {
     "Generic": "secret:generic",
 }
 
+# I5: Detector-specific remediation guidance for issue bodies
+DETECTOR_REMEDIATION = {
+    "AWS": (
+        "1. **Deactivate** the key in [IAM Console](https://console.aws.amazon.com/iam/) → Users → Security credentials\n"
+        "2. **Delete** the compromised access key\n"
+        "3. **Create** a new key and update all services using it\n"
+        "4. Review [CloudTrail](https://console.aws.amazon.com/cloudtrail/) for unauthorized usage"
+    ),
+    "GCP": (
+        "1. **Revoke** the service account key in [GCP Console](https://console.cloud.google.com/iam-admin/serviceaccounts)\n"
+        "2. **Delete** the compromised key JSON\n"
+        "3. **Create** a new key and redeploy\n"
+        "4. Review [Cloud Audit Logs](https://console.cloud.google.com/logs) for unauthorized access"
+    ),
+    "Azure": (
+        "1. **Regenerate** the key/secret in [Azure Portal](https://portal.azure.com/)\n"
+        "2. **Update** all applications using the old credential\n"
+        "3. Review [Azure Activity Log](https://portal.azure.com/#blade/Microsoft_Azure_ActivityLog) for unauthorized usage"
+    ),
+    "GitHub": (
+        "1. **Revoke** the token at [GitHub Settings → Tokens](https://github.com/settings/tokens)\n"
+        "2. **Create** a new fine-grained token with minimum required permissions\n"
+        "3. Review [Security Log](https://github.com/settings/security-log) for unauthorized API usage"
+    ),
+    "Slack": (
+        "1. **Revoke** the token in [Slack App Management](https://api.slack.com/apps)\n"
+        "2. **Generate** a new token with required scopes\n"
+        "3. Review Slack audit logs for unauthorized message access"
+    ),
+    "SlackWebhook": (
+        "1. **Delete** the webhook in [Slack App → Incoming Webhooks](https://api.slack.com/apps)\n"
+        "2. **Create** a new webhook URL and update integrations"
+    ),
+    "Stripe": (
+        "1. **Roll** the API key in [Stripe Dashboard](https://dashboard.stripe.com/apikeys)\n"
+        "2. **Update** all services using the old key\n"
+        "3. Review [Stripe event logs](https://dashboard.stripe.com/events) for unauthorized activity"
+    ),
+    "SendGrid": (
+        "1. **Revoke** the API key in [SendGrid Settings](https://app.sendgrid.com/settings/api_keys)\n"
+        "2. **Create** a new key with minimum required permissions"
+    ),
+    "Private Key": (
+        "1. **Revoke** any certificates signed with this key\n"
+        "2. **Generate** a new key pair: `ssh-keygen -t ed25519` or `openssl genrsa -out new_key.pem 4096`\n"
+        "3. **Re-issue** certificates or deploy the new public key\n"
+        "4. **Remove** the compromised key from all authorized_keys / trust stores"
+    ),
+    "SSH": (
+        "1. **Remove** the key from `~/.ssh/authorized_keys` on all servers\n"
+        "2. **Generate** a new key: `ssh-keygen -t ed25519 -C 'replacement'`\n"
+        "3. **Deploy** the new public key to required hosts\n"
+        "4. Review SSH access logs (`/var/log/auth.log`) for unauthorized logins"
+    ),
+    "Database": (
+        "1. **Rotate** the database password immediately\n"
+        "2. **Update** connection strings in all services / secret managers\n"
+        "3. **Review** database access logs for unauthorized queries\n"
+        "4. Consider restricting access to IP allowlists"
+    ),
+    "Kubernetes": (
+        "1. **Rotate** the service account token / kubeconfig\n"
+        "2. **Delete** the compromised Secret: `kubectl delete secret <name>`\n"
+        "3. Review `kubectl get events` and audit logs for unauthorized API calls"
+    ),
+    "Twilio": (
+        "1. **Rotate** the Auth Token in [Twilio Console](https://www.twilio.com/console)\n"
+        "2. **Update** all applications using the old credentials"
+    ),
+}
+
 def normalize_detector(name: str) -> str:
     n = (name or "").lower()
     for k in DETECTOR_TYPES:
@@ -282,17 +353,26 @@ def normalize_detector(name: str) -> str:
         return "JWT"
     return "Generic"
 
-def labels_for_items(items: List[Dict[str, Any]], extra: Optional[List[str]] = None) -> List[str]:
-    labels = set(DEFAULT_LABELS)
+def highest_severity(items: List[Dict[str, Any]]) -> str:
+    """Return the highest severity label across all items."""
     highest = "sec:low"
     for it in items:
         det = normalize_detector(str(it.get("detector", "")))
         sev = DETECTOR_SEVERITY.get(det, "sec:medium")
-        typ = DETECTOR_TYPES.get(det, "secret:generic")
-        labels.add(sev)
-        labels.add(typ)
         if _severity_rank(sev) > _severity_rank(highest):
             highest = sev
+    return highest
+
+def labels_for_items(items: List[Dict[str, Any]], extra: Optional[List[str]] = None) -> List[str]:
+    """Build a concise label set: base labels + highest severity only + needs-triage.
+
+    Previous approach added every unique severity AND every detector-type label,
+    producing 10-15 labels per issue.  Now we keep only the highest severity
+    (the most actionable signal) and leave detector detail in the issue body.
+    """
+    labels = set(DEFAULT_LABELS)
+    sev = highest_severity(items)
+    labels.add(sev)
     labels.add("needs-triage")
     if extra:
         labels.update([s.strip() for s in extra if s.strip()])
@@ -353,6 +433,7 @@ def file_path(o: Dict[str, Any]) -> str:
         ["SourceMetadata", "Data", "Git", "file"],
         ["SourceMetadata", "Data", "Github", "file"],
         ["SourceMetadata", "Data", "GitHub", "file"],
+        ["SourceMetadata", "Data", "Filesystem", "file"],
         ["SourceMetadata", "Data", "file"],
     ):
         v = deepget(o, path)
@@ -365,6 +446,7 @@ def line_no(o: Dict[str, Any]) -> Optional[int]:
         ["SourceMetadata", "Data", "Git", "line"],
         ["SourceMetadata", "Data", "Github", "line"],
         ["SourceMetadata", "Data", "GitHub", "line"],
+        ["SourceMetadata", "Data", "Filesystem", "line"],
         ["SourceMetadata", "Data", "line"],
     ):
         v = deepget(o, path)
@@ -402,7 +484,9 @@ def line_link(repo: str, commit: Optional[str], path: str, line: Optional[int]) 
     Users can still find the exact line by looking at the Line column in the table.
     """
     if repo and path:
-        quoted = urlquote(path, safe="/")
+        # Strip container/filesystem prefixes (e.g. /repo/) for clean GitHub URLs
+        clean = re.sub(r'^/repo/', '', path).lstrip('/')
+        quoted = urlquote(clean, safe="/")
         # NOTE: No line anchor to prevent GitHub's auto code preview
         if commit:
             return f"https://github.com/{repo}/blob/{commit}/{quoted}"
@@ -410,6 +494,21 @@ def line_link(repo: str, commit: Optional[str], path: str, line: Optional[int]) 
             return f"https://github.com/{repo}/blob/HEAD/{quoted}"
     if repo and commit:
         return f"https://github.com/{repo}/commit/{commit}"
+    return ""
+
+def blame_link(repo: str, commit: Optional[str], path: str, line: Optional[int]) -> str:
+    """Generate a GitHub blame link WITH line anchor.
+
+    Blame view is safe to deep-link (no auto code-preview expansion in issues)
+    and the line anchor helps reviewers jump straight to the responsible commit.
+    """
+    if repo and path:
+        # Strip container/filesystem prefixes (e.g. /repo/) for clean GitHub URLs
+        clean = re.sub(r'^/repo/', '', path).lstrip('/')
+        quoted = urlquote(clean, safe="/")
+        ref = commit or "HEAD"
+        anchor = f"#L{line}" if line else ""
+        return f"https://github.com/{repo}/blame/{ref}/{quoted}{anchor}"
     return ""
 
 # ---------------------------- False-positive filtering ----------------------------
@@ -461,10 +560,60 @@ def is_excluded(o: Dict[str, Any], regexes: List[re.Pattern]) -> bool:
 # ---------------------------- GitHub API ----------------------------
 
 class GHClient:
-    def __init__(self, token: str, dry_run: bool = False):
+    def __init__(self, token: str, dry_run: bool = False,
+                 app_id: str = "", app_private_key: str = ""):
         self.token = token
         self.api_base = API_BASE
         self.dry_run = dry_run
+        self._app_id = app_id
+        self._app_private_key = app_private_key
+        self._org_token_cache: Dict[str, str] = {}  # org -> installation access token
+
+    def _get_installation_for_org(self, org: str) -> int:
+        """Look up the GitHub App installation ID for a given org via the App JWT."""
+        if not JWT_AVAILABLE:
+            raise RuntimeError("PyJWT required for multi-org App auth")
+        now = int(time.time())
+        payload = {'iat': now, 'exp': now + (10 * 60), 'iss': self._app_id}
+        jwt_token = jwt.encode(payload, self._app_private_key, algorithm='RS256')
+
+        GLOBAL_LIMITER.wait()
+        url = f"{self.api_base}/orgs/{org}/installation"
+        req = Request(url, method='GET')
+        req.add_header('Authorization', f'Bearer {jwt_token}')
+        req.add_header('Accept', 'application/vnd.github+json')
+        req.add_header('X-GitHub-Api-Version', '2022-11-28')
+        with urlopen(req, timeout=DEFAULT_API_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            installation_id = data.get('id')
+            logging.info("Found installation %s for org %s", installation_id, org)
+            return installation_id
+
+    def for_org(self, org: str) -> 'GHClient':
+        """Return a GHClient with an installation token scoped to the target org.
+
+        GitHub App installation tokens are org-scoped: a token minted for org A
+        cannot access private repos in org B.  When the scanner processes findings
+        across multiple orgs, each org needs its own token.
+
+        Falls back to the default token when App credentials are not available
+        (e.g. PAT-based auth) or when the lookup fails.
+        """
+        if not self._app_id or not self._app_private_key:
+            return self  # PAT auth — token already works cross-org
+
+        if org in self._org_token_cache:
+            return GHClient(token=self._org_token_cache[org], dry_run=self.dry_run)
+
+        try:
+            installation_id = self._get_installation_for_org(org)
+            token = get_github_app_token(self._app_id, self._app_private_key, str(installation_id))
+            self._org_token_cache[org] = token
+            logging.info("Obtained org-scoped token for %s (installation=%s)", org, installation_id)
+            return GHClient(token=token, dry_run=self.dry_run)
+        except Exception as e:
+            logging.warning("Failed to get org-scoped token for %s, using default: %s", org, e)
+            return self
 
     def _req(self, method: str, path: str, payload: Optional[dict], attempt: int) -> dict:
         GLOBAL_LIMITER.wait()
@@ -611,8 +760,8 @@ class GHClient:
         cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
         try:
             # List ALL issues (open and closed) sorted by created date
-            # Check first 5 pages (150 issues) for hash matches
-            for page in [1, 2, 3, 4, 5]:
+            # E6: Reduced from 5 pages to 2 (exact-match title handles most dupes now)
+            for page in [1, 2]:
                 data = self.call("GET", f"/repos/{repo}/issues?state=all&sort=created&direction=desc&per_page=30&page={page}", None)
                 if not isinstance(data, list):
                     break
@@ -663,14 +812,16 @@ class GHClient:
         return [n for n in names if n]
 
     def create_labels_if_needed(self, repo: str, labels: List[str]) -> None:
-        existing = set(self.get_labels(repo))
-        missing = [label for label in labels if label not in existing]
-        for lbl in missing:
+        """E2: POST-first strategy — try to create, treat 422/409 as 'already exists'.
+        Eliminates the GET /labels pagination entirely."""
+        for lbl in labels:
             try:
                 self.call("POST", f"/repos/{repo}/labels", {"name": lbl})
                 logging.info("Created label %s in %s", lbl, repo)
             except HTTPError as e:
-                if e.code not in (409, 422):
+                if e.code in (409, 422):
+                    pass  # Label already exists — expected
+                else:
                     logging.warning("Could not create label %s in %s (HTTP %d)", lbl, repo, e.code)
 
     def create_issue(self, repo: str, title: str, body: str, labels: Optional[List[str]] = None) -> dict:
@@ -727,6 +878,7 @@ def load_findings(ndjson_path: str, exclude_regexes: List[re.Pattern], include_u
     """Read NDJSON and return findings grouped by repo, filtered to Verified==True (or all if include_unverified) and not excluded, de-duped.
     
     If allow_no_repo is True, findings without repo metadata are grouped under '_filesystem_' (useful for filesystem scans with --target-repo).
+    Now includes 'redacted' and 'verified' fields for richer issue content (I3, I4).
     """
     findings_by_repo: Dict[str, List[Dict[str, Any]]] = {}
     seen = set()
@@ -745,6 +897,8 @@ def load_findings(ndjson_path: str, exclude_regexes: List[re.Pattern], include_u
             "file": file_path(obj),
             "line": line_no(obj),
             "commit": commit_sha(obj),
+            "redacted": obj.get("Redacted") or "",
+            "verified": obj.get("Verified", False),
         }
 
         key = make_finding_key(repo, item["detector"], item["file"], item["line"], item["commit"])
@@ -832,82 +986,241 @@ def write_markdown_summary(ndjson_path: str,
                            include_detailed: bool = False,
                            detailed_per_repo: int = 10,
                            detailed_max_total: int = 300,
-                           errors_path: Optional[str] = None) -> None:
+                           errors_path: Optional[str] = None,
+                           target_repo: Optional[str] = None) -> None:
     """
     Build a verified-only summary with strict de-duplication:
     uniqueness key = (repo, detector, file, line, commit).
     Counts and detailed rows reflect unique findings only.
+
+    Improvements (S1/S2/S5):
+    - Severity breakdown table using DETECTOR_SEVERITY mapping
+    - False-positive / unverified filter statistics
+    - Markdown [View](url) links in detailed table
+    - Top offenders callout for repos with >= 5 findings
     """
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    unique_seen = set()
-    per_repo = collections.Counter()
-    per_det = collections.Counter()
-    per_repo_rows: Dict[str, List[Tuple[str, str, Optional[int], str]]] = {}
-    total = 0
 
-    for o in iter_ndjson(ndjson_path, verified_only=True, exclude_regexes=exclude_regexes):
-        det = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
-        repo = sanitize_repo(find_repo(o) or "")
-        if not repo:
-            continue
+    # ---- tracking structures for verified AND unverified ----
+    seen_verified: set = set()
+    seen_unverified: set = set()
 
-        fpath = file_path(o)
-        ln = line_no(o)
-        sha = commit_sha(o)
-        link = line_link(repo, sha, fpath, ln)
+    # Verified counters
+    ver_repo = collections.Counter()
+    ver_det = collections.Counter()
+    ver_sev = collections.Counter()
+    ver_total = 0
 
-        key = make_finding_key(repo, det, fpath, ln, sha)
-        if key in unique_seen:
-            continue
-        unique_seen.add(key)
+    # Unverified counters (new: full breakdown instead of single int)
+    unver_repo = collections.Counter()
+    unver_det = collections.Counter()
+    unver_sev = collections.Counter()
+    unver_repo_det: collections.Counter = collections.Counter()  # (repo, detector) pairs
+    unver_total = 0
 
-        total += 1
-        per_repo[repo] += 1
-        per_det[det] += 1
+    # Detailed rows (verified + unverified)
+    # (detector, severity, file, line, view_link, blame_link)
+    ver_repo_rows: Dict[str, List[Tuple[str, str, str, Optional[int], str, str]]] = {}
+    unver_repo_rows: Dict[str, List[Tuple[str, str, str, Optional[int], str, str]]] = {}
 
-        if include_detailed:
-            per_repo_rows.setdefault(repo, []).append((det, fpath, ln, link))
+    # S2: filter statistics
+    total_lines = 0
+    total_excluded = 0
+    total_bad = 0
 
+    if os.path.exists(ndjson_path) and os.path.getsize(ndjson_path) > 0:
+        with open(ndjson_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                total_lines += 1
+                try:
+                    o = json.loads(raw)
+                except Exception:
+                    total_bad += 1
+                    continue
+
+                # Check exclusion first
+                if exclude_regexes and is_excluded(o, exclude_regexes):
+                    total_excluded += 1
+                    continue
+
+                det = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
+                repo = sanitize_repo(find_repo(o) or "")
+                if not repo:
+                    if target_repo:
+                        repo = sanitize_repo(target_repo)
+                    else:
+                        continue
+
+                fpath = file_path(o)
+                ln = line_no(o)
+                sha = commit_sha(o)
+                link = line_link(repo, sha, fpath, ln)
+                bl_link = blame_link(repo, sha, fpath, ln)
+                norm_det = normalize_detector(det)
+                sev = DETECTOR_SEVERITY.get(norm_det, "sec:medium")
+                is_verified = o.get("Verified") is True
+
+                if is_verified:
+                    key = make_finding_key(repo, det, fpath, ln, sha)
+                    if key in seen_verified:
+                        continue
+                    seen_verified.add(key)
+                    ver_total += 1
+                    ver_repo[repo] += 1
+                    ver_det[det] += 1
+                    ver_sev[sev] += 1
+                    if include_detailed:
+                        ver_repo_rows.setdefault(repo, []).append((det, sev, fpath, ln, link, bl_link))
+                else:
+                    key = make_finding_key(repo, det, fpath, ln, sha)
+                    if key in seen_unverified:
+                        continue
+                    seen_unverified.add(key)
+                    unver_total += 1
+                    unver_repo[repo] += 1
+                    unver_det[det] += 1
+                    unver_sev[sev] += 1
+                    unver_repo_det[(repo, det)] += 1
+                    if include_detailed:
+                        unver_repo_rows.setdefault(repo, []).append((det, sev, fpath, ln, link, bl_link))
+
+    # ---- Build summary markdown ----
+    grand_total = ver_total + unver_total
     content_lines: List[str] = []
     content_lines.append(f"## TruffleHog summary for `{org}`\n")
-    content_lines.append(f"- Total verified unique finding(s): **{total}**\n")
+    content_lines.append(f"| Metric | Count |\n|---|---:|\n")
+    content_lines.append(f"| Total unique findings | **{grand_total}** |\n")
+    content_lines.append(f"| Verified (issues created) | **{ver_total}** |\n")
+    content_lines.append(f"| Unverified (informational) | **{unver_total}** |\n")
+    if total_excluded > 0:
+        content_lines.append(f"| Filtered as false-positive | **{total_excluded}** |\n")
+    if total_bad > 0:
+        content_lines.append(f"| Malformed NDJSON lines | **{total_bad}** |\n")
+    content_lines.append("\n")
 
-    if per_repo:
-        content_lines.append("### Findings by repository (unique, verified)\n")
-        content_lines.append("| Repository | Unique verified |\n|---|---:|\n")
-        for r, c in per_repo.most_common():
-            content_lines.append(f"| `{r}` | {c} |\n")
+    # Severity breakdown — combined verified + unverified
+    sev_emoji = {"sec:critical": "🔴", "sec:high": "🟠", "sec:medium": "🟡", "sec:low": "🟢"}
+    any_sev = any(ver_sev.get(s, 0) + unver_sev.get(s, 0) > 0 for s in SEVERITY_ORDER)
+    if any_sev:
+        content_lines.append("### Findings by severity\n")
+        content_lines.append("| Severity | Verified | Unverified | Total |\n|---|---:|---:|---:|\n")
+        for sev in SEVERITY_ORDER[::-1]:  # critical first
+            v = ver_sev.get(sev, 0)
+            u = unver_sev.get(sev, 0)
+            if v + u > 0:
+                emoji = sev_emoji.get(sev, "")
+                sev_label = sev.replace("sec:", "").upper()
+                content_lines.append(f"| {emoji} {sev_label} | {v} | {u} | {v + u} |\n")
         content_lines.append("\n")
 
-    if per_det:
-        content_lines.append("### Findings by detector (unique, verified)\n")
-        content_lines.append("| Detector | Unique verified |\n|---|---:|\n")
-        for d, c in per_det.most_common():
-            content_lines.append(f"| {d} | {c} |\n")
+    # Top offenders callout (verified >= 5 or combined >= 10)
+    all_repos = set(list(ver_repo.keys()) + list(unver_repo.keys()))
+    top_offenders = [(r, ver_repo.get(r, 0), unver_repo.get(r, 0))
+                     for r in all_repos
+                     if ver_repo.get(r, 0) >= 5 or (ver_repo.get(r, 0) + unver_repo.get(r, 0)) >= 10]
+    top_offenders.sort(key=lambda x: x[1] + x[2], reverse=True)
+    if top_offenders:
+        content_lines.append("### Top offenders\n")
+        content_lines.append("| Repository | Verified | Unverified | Total |\n|---|---:|---:|---:|\n")
+        for r, v, u in top_offenders:
+            content_lines.append(f"| `{r}` | {v} | {u} | {v + u} |\n")
         content_lines.append("\n")
 
-    if include_detailed and per_repo_rows:
-        content_lines.append("### Detailed verified findings by repository (unique)\n")
+    # Findings by repository — combined table (top 50 by total, rest in collapsible)
+    if all_repos:
+        content_lines.append("### Findings by repository\n")
+        content_lines.append("| Repository | Verified | Unverified | Total |\n|---|---:|---:|---:|\n")
+        combined_repo = [(r, ver_repo.get(r, 0), unver_repo.get(r, 0)) for r in all_repos]
+        combined_repo.sort(key=lambda x: x[1] + x[2], reverse=True)
+        shown = combined_repo[:50]
+        rest = combined_repo[50:]
+        for r, v, u in shown:
+            content_lines.append(f"| `{r}` | {v} | {u} | {v + u} |\n")
+        if rest:
+            content_lines.append("\n<details>\n<summary>Show remaining %d repositories</summary>\n\n" % len(rest))
+            content_lines.append("| Repository | Verified | Unverified | Total |\n|---|---:|---:|---:|\n")
+            for r, v, u in rest:
+                content_lines.append(f"| `{r}` | {v} | {u} | {v + u} |\n")
+            content_lines.append("\n</details>\n")
+        content_lines.append("\n")
+
+    # Findings by detector — combined table
+    all_dets = set(list(ver_det.keys()) + list(unver_det.keys()))
+    if all_dets:
+        content_lines.append("### Findings by detector\n")
+        content_lines.append("| Detector | Verified | Unverified | Total |\n|---|---:|---:|---:|\n")
+        combined_det = [(d, ver_det.get(d, 0), unver_det.get(d, 0)) for d in all_dets]
+        combined_det.sort(key=lambda x: x[1] + x[2], reverse=True)
+        for d, v, u in combined_det:
+            content_lines.append(f"| {d} | {v} | {u} | {v + u} |\n")
+        content_lines.append("\n")
+
+    # Unverified breakdown: top repo × detector combinations
+    if unver_repo_det:
+        content_lines.append("### Unverified findings by repo × detector (top 50)\n")
+        content_lines.append("| Repository | Detector | Count |\n|---|---|---:|\n")
+        top_combos = unver_repo_det.most_common(50)
+        for (r, d), cnt in top_combos:
+            content_lines.append(f"| `{r}` | {d} | {cnt} |\n")
+        omitted = len(unver_repo_det) - len(top_combos)
+        if omitted > 0:
+            content_lines.append(f"\n_... {omitted} more repo×detector combinations omitted._\n")
+        content_lines.append("\n")
+
+    # Detailed verified findings
+    if include_detailed and ver_repo_rows:
+        content_lines.append("### Detailed verified findings (issues created)\n")
         total_rows = 0
-        for repo, _cnt in per_repo.most_common():
-            rows = list(dict.fromkeys(per_repo_rows.get(repo, [])))  # De-dupe while preserving order
+        for repo in sorted(ver_repo_rows, key=lambda r: ver_repo.get(r, 0), reverse=True):
+            rows = list(dict.fromkeys(ver_repo_rows[repo]))
             if not rows or total_rows >= max(1, detailed_max_total):
                 continue
-
             content_lines.append(f"#### `{repo}`\n")
-            content_lines.append("| Detector | File | Line | Link |\n|---|---|---:|---|\n")
-            for idx, (det, fpath, ln, link) in enumerate(rows):
+            content_lines.append("| Severity | Detector | File | Line | View | Blame |\n|---|---|---|---:|---|---|\n")
+            for idx, (det, sev, fpath, ln, link, bl) in enumerate(rows):
                 if idx >= max(1, detailed_per_repo) or total_rows >= max(1, detailed_max_total):
                     break
                 ln_str = str(ln) if ln is not None else ""
-                content_lines.append(f"| {det} | `{fpath}` | {ln_str} | {link or ''} |\n")
+                link_display = f"[View]({link})" if link else ""
+                blame_display = f"[Blame]({bl})" if bl else ""
+                sev_label = sev.replace("sec:", "").upper()
+                content_lines.append(f"| {sev_label} | {det} | `{fpath}` | {ln_str} | {link_display} | {blame_display} |\n")
                 total_rows += 1
             content_lines.append("\n")
-
         if total_rows >= max(1, detailed_max_total):
-            remaining = sum(len(v) for v in per_repo_rows.values()) - total_rows
+            remaining = sum(len(v) for v in ver_repo_rows.values()) - total_rows
             if remaining > 0:
-                content_lines.append(f"_... {remaining} more finding(s) omitted to keep the summary concise._\n\n")
+                content_lines.append(f"_... {remaining} more verified finding(s) omitted._\n\n")
+
+    # Detailed unverified findings (informational — no issues created)
+    if include_detailed and unver_repo_rows:
+        content_lines.append("### Unverified findings (informational — no issues created)\n")
+        content_lines.append("<details>\n<summary>Expand to view unverified findings</summary>\n\n")
+        total_rows = 0
+        for repo in sorted(unver_repo_rows, key=lambda r: unver_repo.get(r, 0), reverse=True):
+            rows = list(dict.fromkeys(unver_repo_rows[repo]))
+            if not rows or total_rows >= max(1, detailed_max_total):
+                continue
+            content_lines.append(f"#### `{repo}`\n")
+            content_lines.append("| Severity | Detector | File | Line | View | Blame |\n|---|---|---|---:|---|---|\n")
+            for idx, (det, sev, fpath, ln, link, bl) in enumerate(rows):
+                if idx >= max(1, detailed_per_repo) or total_rows >= max(1, detailed_max_total):
+                    break
+                ln_str = str(ln) if ln is not None else ""
+                link_display = f"[View]({link})" if link else ""
+                blame_display = f"[Blame]({bl})" if bl else ""
+                sev_label = sev.replace("sec:", "").upper()
+                content_lines.append(f"| {sev_label} | {det} | `{fpath}` | {ln_str} | {link_display} | {blame_display} |\n")
+                total_rows += 1
+            content_lines.append("\n")
+        if total_rows >= max(1, detailed_max_total):
+            remaining = sum(len(v) for v in unver_repo_rows.values()) - total_rows
+            if remaining > 0:
+                content_lines.append(f"_... {remaining} more unverified finding(s) omitted._\n\n")
+        content_lines.append("</details>\n\n")
 
     errs = load_errors_ndjson(errors_path)
     if errs:
@@ -920,7 +1233,7 @@ def write_markdown_summary(ndjson_path: str,
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as out:
             out.writelines(content_lines)
-        print(f"[{org}] summary written (unique verified total={total})")
+        print(f"[{org}] summary written (verified={ver_total}, unverified={unver_total}, excluded={total_excluded})")
     else:
         print("".join(content_lines))
 
@@ -967,38 +1280,79 @@ def repo_is_actionable(meta: Optional[dict]) -> bool:
         return False
     return True
 
-def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "") -> str:
+def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scanner_repo: str = "",
+                     findings_hash: str = "") -> str:
+    """Build the GitHub issue body with severity badge (I1), commit SHA (I2),
+    redacted preview (I3), verified status (I4), detector-specific remediation (I5),
+    FP suppression guide (I6), scan timestamp (I7), and hash explanation (I8)."""
     count_text = "1 verified secret" if len(items) == 1 else f"{len(items)} verified secrets"
     # Adjust text if using --include-unverified (items may be unverified)
-    if len(items) > 0 and items[0].get("original_repo"):
+    has_unverified = any(not it.get("verified", True) for it in items)
+    if has_unverified or (len(items) > 0 and items[0].get("original_repo")):
         count_text = "1 finding" if len(items) == 1 else f"{len(items)} findings"
+
+    # I1: Severity badge at top
+    sev = highest_severity(items)
+    sev_label = sev.replace("sec:", "").upper()
+    sev_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev_label, "⚪")
+
+    # I7: Scan timestamp
+    scan_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
     header = [
-        f"## Secret Detection Alert",
+        f"## {sev_emoji} Secret Detection Alert — Severity: {sev_label}",
         "",
         f"**Status**: {count_text} found in this repository",
+        f"**Severity**: {sev_emoji} **{sev_label}**",
+        f"**Scan date**: {scan_time}",
         f"**Scan**: [View workflow run]({run_url})" if run_url else "",
+    ]
+
+    # I8: Findings hash explanation
+    if findings_hash:
+        header.append(f"**Findings hash**: `{findings_hash}` _(used for deduplication — same secrets produce the same hash)_")
+
+    header.extend([
         "",
         "> **SECURITY NOTICE**: Do not paste secret values in this issue. All secrets below should be considered compromised.",
         "",
         "### Findings",
         "",
-        "| Detector | File | Line | Link |",
-        "|---|---|---:|---|",
-    ]
+        "| Detector | File | Line | Commit | Verified | Redacted | View | Blame |",
+        "|---|---|---:|---|---|---|---|---|",
+    ])
     rows = []
+    # Collect unique detector types for targeted remediation
+    seen_detectors: set = set()
     for it in items:
         path = it.get("file", "") or ""
         ln = it.get("line")
         sha = it.get("commit")
         # Use original_repo for link if available (consolidation mode)
-        link_repo = it.get("original_repo") or repo
+        # Skip _filesystem_ placeholder — it's not a valid GitHub repo
+        orig = it.get("original_repo") or ""
+        link_repo = orig if orig and orig != "_filesystem_" else repo
         link_url = line_link(link_repo, sha, path, ln)
+        bl_url = blame_link(link_repo, sha, path, ln)
         ln_str = str(ln) if ln is not None else ""
+
+        # I2: Short commit SHA
+        sha_display = f"`{sha[:7]}`" if sha else ""
+
+        # I3: Redacted preview
+        redacted = it.get("redacted", "") or ""
+        redacted_display = f"`{redacted[:40]}`" if redacted else ""
+
+        # I4: Verified status
+        ver_display = "✅" if it.get("verified", False) else "❓"
 
         # Format link as markdown to make it clickable
         link_display = f"[View]({link_url})" if link_url else ""
+        blame_display = f"[Blame]({bl_url})" if bl_url else ""
 
-        rows.append(f"| {it.get('detector','')} | `{path}` | {ln_str} | {link_display} |")
+        det_name = it.get('detector', '')
+        rows.append(f"| {det_name} | `{path}` | {ln_str} | {sha_display} | {ver_display} | {redacted_display} | {link_display} | {blame_display} |")
+        seen_detectors.add(normalize_detector(det_name))
 
     # Build remediation guide link if scanner_repo is provided
     remediation_link = ""
@@ -1014,6 +1368,21 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         "### Step 1: Rotate/Revoke Immediately",
         "**Assume all secrets above are compromised.**",
         "",
+    ]
+
+    # I5: Detector-specific remediation
+    specific_guidance = []
+    for det in sorted(seen_detectors):
+        if det in DETECTOR_REMEDIATION:
+            specific_guidance.append(f"**{det}**:\n{DETECTOR_REMEDIATION[det]}")
+    if specific_guidance:
+        guidance.append("### Detector-Specific Rotation Steps")
+        guidance.append("")
+        for sg in specific_guidance:
+            guidance.append(sg)
+            guidance.append("")
+
+    guidance.extend([
         "### Step 2: Remove from Git History",
         "**Recent commits** (last few commits):",
         "```bash",
@@ -1032,7 +1401,22 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         "```",
         "**WARNING**: Coordinate with your team before force-pushing to shared branches.",
         "",
-    ]
+    ])
+
+    # I6: False-positive suppression guide
+    guidance.extend([
+        "### False Positive?",
+        "If this finding is a false positive (e.g., test fixture, example, or revoked credential),",
+        "add a regex to the exclude patterns file to suppress future alerts:",
+        "",
+        "```",
+        "# In .github/trufflehog/false_positives.txt, add a line like:",
+        f"file={path}.*detector=.*  # Suppress findings in this file",
+        "```",
+        "",
+        "See the [exclude patterns documentation](https://github.com/" + (scanner_repo or "your-org/trufflehog") + "/blob/main/README.md) for details.",
+        "",
+    ])
 
     # Always show additional resources
     resources = [
@@ -1058,24 +1442,26 @@ def process_repo(repo: str,
                  dry_run: bool,
                  scanner_repo: str = "",
                  force_create: bool = False) -> Tuple[str, bool]:
+    # Get an org-scoped token for the target repo's org (no-op for PAT auth)
+    org = repo.split("/")[0] if "/" in repo else ""
+    if org:
+        gh = gh.for_org(org)
     logging.info("Processing repo %s with %d finding(s)", repo, len(items))
     meta = gh.repo_meta(repo)
     if not repo_is_actionable(meta):
         return (repo, False)
 
-    # Compute unique hash for these findings to enable duplicate detection
+    # I9/E6: Compute unique hash; title uses hash only (no date) for cheaper dedup
     findings_hash = compute_findings_hash(items)
-    today = datetime.date.today().isoformat()
-    title = f"{title_prefix} Secrets scan report - {today} ({findings_hash})"
+    title = f"{title_prefix} Secrets scan report ({findings_hash})"
 
     if not force_create:
-        # Check for exact match (same findings, same day)
+        # Primary: exact title match (hash-based, date-free) — 1-2 API calls
         if gh.search_issue_by_title(repo, title):
             logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
             return (repo, False)
 
-        # Check for issues with same findings hash within last 90 days (open or closed)
-        # This prevents re-notifying about secrets that were already reported
+        # Secondary: search for issues with same hash within 90 days (2 pages max)
         title_pattern = f"{title_prefix} Secrets scan report"
         hash_pattern = f"({findings_hash})"
         if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=90):
@@ -1090,7 +1476,7 @@ def process_repo(repo: str,
     except HTTPError as e:
         logging.warning("Skipping label creation in %s due to HTTP %d; continuing to issue body.", repo, e.code)
 
-    body = build_issue_body(repo, items, run_url, scanner_repo)
+    body = build_issue_body(repo, items, run_url, scanner_repo, findings_hash=findings_hash)
     try:
         created = gh.create_issue(repo, title, body, auto) or {}
         issue_number = created.get("number")
@@ -1213,7 +1599,8 @@ def main() -> int:
                 include_detailed=args.summary_detailed,
                 detailed_per_repo=max(1, args.summary_detailed_per_repo),
                 detailed_max_total=max(1, args.summary_detailed_max),
-                errors_path=args.errors_ndjson
+                errors_path=args.errors_ndjson,
+                target_repo=args.target_repo
             )
         except Exception as e:
             logging.warning("Summary generation failed: %s", e)
@@ -1234,7 +1621,9 @@ def main() -> int:
             logging.info("No verified findings detected after filtering; no issues created")
         return 0
 
-    gh = GHClient(token=token, dry_run=args.dry_run)
+    app_id = os.environ.get('GH_APP_ID', '')
+    app_private_key = os.environ.get('GH_APP_PRIVATE_KEY', '')
+    gh = GHClient(token=token, dry_run=args.dry_run, app_id=app_id, app_private_key=app_private_key)
     extra_labels = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
     max_workers = args.max_workers or max(1, min(8, (os.cpu_count() or 2) * 2))
 
