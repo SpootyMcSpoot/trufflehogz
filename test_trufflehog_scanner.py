@@ -819,9 +819,9 @@ class TestMultiOrgAuth:
 
         client = GHClient(token="default-token", dry_run=False,
                           app_id="12345", app_private_key="fake-key")
-        result = client.for_org("SLAC")
+        result = client.for_org("ORG")
 
-        mock_get_install.assert_called_once_with("SLAC")
+        mock_get_install.assert_called_once_with("ORG")
         mock_get_token.assert_called_once_with("12345", "fake-key", "99999")
         assert result.token == "ghs_org_scoped_token"
         assert result is not client  # Should be a new client
@@ -835,8 +835,8 @@ class TestMultiOrgAuth:
 
         client = GHClient(token="default-token", dry_run=False,
                           app_id="12345", app_private_key="fake-key")
-        result1 = client.for_org("SLAC")
-        result2 = client.for_org("SLAC")
+        result1 = client.for_org("ORG")
+        result2 = client.for_org("ORG")
 
         # Should only call the API once (cached on second call)
         mock_get_install.assert_called_once()
@@ -1134,10 +1134,10 @@ class TestBuildIssueBody:
         """Items with original_repo='_filesystem_' should use the issue repo for links."""
         items = [{"detector": "AWS", "file": "/repo/secrets.txt", "line": 3, "commit": None,
                   "verified": False, "original_repo": "_filesystem_"}]
-        body = build_issue_body("slac-it/trufflehog", items, "https://github.com/runs/1")
+        body = build_issue_body("test-org/test-repo", items, "https://github.com/runs/1")
         assert "_filesystem_" not in body
-        assert "slac-it/trufflehog" in body
-        assert "[Blame](https://github.com/slac-it/trufflehog/blame/HEAD/secrets.txt#L3)" in body
+        assert "test-org/test-repo" in body
+        assert "[Blame](https://github.com/test-org/test-repo/blame/HEAD/secrets.txt#L3)" in body
 
 
 class TestWriteMarkdownSummary:
@@ -1291,14 +1291,14 @@ class TestWriteMarkdownSummary:
         summary_file.close()
         try:
             with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
-                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="slac-it/trufflehog")
+                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="test-org/test-repo")
             with open(summary_file.name) as f:
                 content = f.read()
             # All 3 findings should be counted
             assert "**3**" in content
             assert "Unverified (informational) | **3**" in content
             # The target repo should be used as the repo name
-            assert "slac-it/trufflehog" in content
+            assert "test-org/test-repo" in content
             # Detectors should appear
             assert "Postgres" in content
             assert "AWS" in content

@@ -33,41 +33,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install actionlint
-        run: |
-          set -euo pipefail
-          ACTIONLINT_VERSION="1.7.11"
-          curl -sSLo actionlint.bash \
-            "https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash"
-          bash actionlint.bash "$ACTIONLINT_VERSION"
-
-      - name: Run actionlint on all workflows
-        run: |
-          set -euo pipefail
-          FAILED=0
-
-          while IFS= read -r wf; do
-            echo ""
-            echo "Checking: ${wf}"
-            if ./actionlint -shellcheck="shellcheck -e SC2086 -e SC2309" "$wf"; then
-              echo "  [OK] Valid"
-            else
-              echo "  [ERROR] FAILED"
-              FAILED=$((FAILED + 1))
-            fi
-          done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \))
-
-          {
-            echo "## Workflow Syntax Validation"
-            echo ""
-            if [ "$FAILED" -eq 0 ]; then
-              echo "✅ All workflow files passed actionlint validation"
-            else
-              echo "❌ $FAILED workflow file(s) failed validation"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          [ "$FAILED" -gt 0 ] && exit 1 || true
+      - name: Run actionlint
+        uses: reviewdog/action-actionlint@db58210330349f43063f28956976860361f9d501  # v1.54.0
+        with:
+          fail_on_error: true
+          filter_mode: "added"
+          level: "error"
+          shellcheck_flags: "-e SC2086 -e SC2309"
 
   # ============================================================================
   # STAGE 2: YAML Lint
@@ -122,7 +94,7 @@ jobs:
   # ============================================================================
 
   validate-actions:
-    name: Validate Action Pinning & Trust
+    name: Validate Action Pinning
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -138,17 +110,12 @@ jobs:
           set -euo pipefail
 
           UNPINNED_COUNT=0
-          UNTRUSTED_COUNT=0
           TOTAL_ACTIONS=0
 
-          # Trusted orgs for trufflehog repo
-          TRUSTED_ORGS=("actions" "github" "docker" "trufflesecurity")
-
-          echo "Trusted organizations: ${TRUSTED_ORGS[*]}"
+          echo "Checking for SHA-pinning in all workflows..."
           echo ""
 
           UNPINNED_FILE=$(mktemp)
-          UNTRUSTED_FILE=$(mktemp)
 
           while IFS= read -r workflow_file; do
             echo "Checking: ${workflow_file}"
@@ -183,28 +150,13 @@ jobs:
                   UNPINNED_COUNT=$((UNPINNED_COUNT + 1))
                   echo "$workflow_file:$line_num: $action" >> "$UNPINNED_FILE"
                 fi
-
-                # Check trusted org
-                IS_TRUSTED="false"
-                for org in "${TRUSTED_ORGS[@]}"; do
-                  if [ "$owner" = "$org" ]; then
-                    IS_TRUSTED="true"
-                    break
-                  fi
-                done
-                if [ "$IS_TRUSTED" = "false" ]; then
-                  UNTRUSTED_COUNT=$((UNTRUSTED_COUNT + 1))
-                  echo "$workflow_file:$line_num: $action (org: $owner)" >> "$UNTRUSTED_FILE"
-                fi
               fi
             done || true
           done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \))
 
           # Read counts from files (subshell piping resets variables)
           UNPINNED_COUNT=$(wc -l < "$UNPINNED_FILE" 2>/dev/null | tr -d ' ')
-          UNTRUSTED_COUNT=$(wc -l < "$UNTRUSTED_FILE" 2>/dev/null | tr -d ' ')
           UNPINNED_COUNT=${UNPINNED_COUNT:-0}
-          UNTRUSTED_COUNT=${UNTRUSTED_COUNT:-0}
 
           {
             echo "## Action Validator Results"
@@ -212,9 +164,6 @@ jobs:
             echo "| Metric | Count |"
             echo "|--------|-------|"
             echo "| Unpinned actions | **${UNPINNED_COUNT}** |"
-            echo "| Untrusted orgs | **${UNTRUSTED_COUNT}** |"
-            echo ""
-            echo "**Trusted orgs:** \`actions, github, docker, trufflesecurity\`"
             echo ""
 
             if [ "${UNPINNED_COUNT}" -gt 0 ]; then
@@ -231,38 +180,20 @@ jobs:
               echo '```'
             fi
 
-            if [ "${UNTRUSTED_COUNT}" -gt 0 ]; then
-              echo ""
-              echo "### ⚠️ Untrusted Organizations (${UNTRUSTED_COUNT})"
-              echo ""
-              echo '```'
-              cat "$UNTRUSTED_FILE"
-              echo '```'
-              echo ""
-              echo "Review these actions or add their org to the trusted list."
-            fi
-
             echo ""
-            if [ "${UNPINNED_COUNT}" -eq 0 ] && [ "${UNTRUSTED_COUNT}" -eq 0 ]; then
+            if [ "${UNPINNED_COUNT}" -eq 0 ]; then
               echo "### ✅ All Actions Validated"
-            elif [ "${UNPINNED_COUNT}" -gt 0 ]; then
-              echo "### ❌ Validation Failed"
             else
-              echo "### ⚠️ Warnings Detected"
+              echo "### ❌ Validation Failed"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          rm -f "$UNPINNED_FILE" "$UNTRUSTED_FILE"
+          rm -f "$UNPINNED_FILE"
 
           # Fail on unpinned actions (hard requirement)
           if [ "${UNPINNED_COUNT}" -gt 0 ]; then
             echo "::error::Found ${UNPINNED_COUNT} unpinned action(s). All actions must be SHA-pinned."
             exit 1
-          fi
-
-          # Warn on untrusted (soft requirement)
-          if [ "${UNTRUSTED_COUNT}" -gt 0 ]; then
-            echo "::warning::Found ${UNTRUSTED_COUNT} action(s) from untrusted organizations."
           fi
 
   # ============================================================================
@@ -391,7 +322,7 @@ jobs:
             echo "|-------|--------|"
             echo "| Workflow Syntax (actionlint) | ${{ needs.validate-workflow-syntax.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo "| YAML Syntax (yamllint) | ${{ needs.validate-yaml-syntax.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
-            echo "| Action Pinning & Trust | ${{ needs.validate-actions.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
+            echo "| Action Pinning | ${{ needs.validate-actions.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo "| Workflow Permissions | ${{ needs.check-permissions.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo "| Python Syntax | ${{ needs.validate-python.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo ""

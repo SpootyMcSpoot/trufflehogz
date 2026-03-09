@@ -92,6 +92,7 @@ permissions:
   contents: read
   packages: read
   issues: write   # used only if open_issues=true
+  actions: read   # needed for gh api and artifacts
 
 concurrency:
   group: trufflehog-org-scan
@@ -105,6 +106,7 @@ env:
 jobs:
   resolve-matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       orgs_json: ${{ steps.set-matrix.outputs.orgs_json }}
     env:
@@ -133,10 +135,11 @@ jobs:
 
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [resolve-matrix]
     outputs:
       tasks_json: ${{ steps.build.outputs.tasks_json }}
-      orgs_json:  ${{ needs.resolve-matrix.outputs.orgs_json }}
+      orgs_json: ${{ needs.resolve-matrix.outputs.orgs_json }}
       total_repos: ${{ steps.build.outputs.total_repos }}
       total_shards: ${{ steps.build.outputs.total_shards }}
       org_notes: ${{ steps.build.outputs.org_notes }}
@@ -147,6 +150,7 @@ jobs:
       GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
       # Fallback to PAT
       GH_PAT: ${{ secrets.GH_PAT }}
+      GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
       API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
       SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
       REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
@@ -175,21 +179,19 @@ jobs:
             echo "::group::Plan for ${ORG}"
 
             # ---- Membership probe ----
-            memb_body="$(mktemp)"; memb_code=0
-            memb_code="$(curl -sS -w '%{http_code}' -o "${memb_body}" \
-              -H "Authorization: Bearer ${GH_PAT}" \
-              -H "Accept: application/vnd.github+json" \
-              "${API}/user/memberships/orgs/${ORG}")" || memb_code=000
+            memb_body="$(mktemp)"
+            if ! gh api "/user/memberships/orgs/${ORG}" > "${memb_body}" 2>/dev/null; then
+              # Get status code from previous command or assume 403
+              memb_code=$(gh api "/user/memberships/orgs/${ORG}" --include --silent | head -n 1 | awk '{print $2}') || memb_code=403
+              
+              if [ "${memb_code}" = "401" ]; then
+                warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
+                echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
+                add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
+                ORG_NOTES="$(jq -c --arg o "$ORG" --arg n "⚠️ Auth error (401) — PAT lacks read:org + repo scope" '. + [{org:$o, note:$n}]' <<< "$ORG_NOTES")"
+                echo "::endgroup::"; continue
+              fi
 
-            if [ "${memb_code}" = "401" ]; then
-              warn_msg="GET /user/memberships/orgs/${ORG} => 401. Ensure PAT has 'read:org' + 'repo'."
-              echo "::warning title=Org membership unauthorized (401)::${warn_msg}"
-              add_warning_task "$ORG" "org_membership" 401 "$warn_msg"
-              ORG_NOTES="$(jq -c --arg o "$ORG" --arg n "⚠️ Auth error (401) — PAT lacks read:org + repo scope" '. + [{org:$o, note:$n}]' <<< "$ORG_NOTES")"
-              echo "::endgroup::"; continue
-            fi
-
-            if [ "${memb_code}" = "403" ] || [ "${memb_code}" = "404" ] || [ "${memb_code}" = "000" ]; then
               warn_msg="GET /user/memberships/orgs/${ORG} => ${memb_code}. Ensure PAT is member (state=active) and has 'read:org' + 'repo'."
               echo "::warning title=No org membership or insufficient scopes::${warn_msg}"
               add_warning_task "$ORG" "org_membership" 403 "$warn_msg"
@@ -209,18 +211,15 @@ jobs:
             # ---- Count visible repos ----
             total=0; page=1
             while :; do
-              body="$(mktemp)"; code=0
-              code="$(curl -sS -w '%{http_code}' -o "${body}" \
-                -H "Authorization: Bearer ${GH_PAT}" \
-                -H "Accept: application/vnd.github+json" \
-                "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
-              if [ "${code}" = "401" ] || [ "${code}" = "403" ]; then
-                warn_msg="GET /orgs/${ORG}/repos => ${code}. Check 'repo' scope and org access."
-                echo "::warning title=Org repo listing unauthorized::${warn_msg}"
-                add_warning_task "$ORG" "list_repos" 403 "$warn_msg"
-                rm -f "${body}"; break
-              fi
-              if [ "${code}" != "200" ]; then
+              body="$(mktemp)"
+              if ! gh api "/orgs/${ORG}/repos?type=all&per_page=100&page=${page}" > "${body}" 2>/dev/null; then
+                code=$(gh api "/orgs/${ORG}/repos?type=all&per_page=100&page=${page}" --include --silent | head -n 1 | awk '{print $2}') || code=403
+                if [ "${code}" = "401" ] || [ "${code}" = "403" ]; then
+                  warn_msg="GET /orgs/${ORG}/repos => ${code}. Check 'repo' scope and org access."
+                  echo "::warning title=Org repo listing unauthorized::${warn_msg}"
+                  add_warning_task "$ORG" "list_repos" 403 "$warn_msg"
+                  rm -f "${body}"; break
+                fi
                 echo "::warning title=Repo list error::GET /orgs/${ORG}/repos => ${code}. Treating as zero."
                 rm -f "${body}"
                 break
@@ -265,6 +264,7 @@ jobs:
 
   scan-org:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     needs: [plan]
     strategy:
       fail-fast: false
@@ -274,6 +274,7 @@ jobs:
     env:
       ORG: ${{ matrix.org }}
       GH_PAT: ${{ secrets.GH_PAT }}
+      GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
       RUN_URL: ${{ github.run_url }}
       API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
       SCAN_HISTORY: ${{ vars.SCAN_HISTORY || 'true' }}
@@ -345,8 +346,6 @@ jobs:
       - name: Enumerate repos (non-public, !archived, !fork) + DIAG:PLAN
         if: ${{ matrix.will_warn != true }}
         shell: bash
-        env:
-          GH_AUTH: "Bearer ${{ env.GH_PAT }}"
         run: |
           set -Eeuo pipefail
           # E5: Single pagination loop captures both repo names AND sizes
@@ -354,12 +353,9 @@ jobs:
           : > "repos-${ORG}-sizes.txt"
           page=1
           while :; do
-            body="$(mktemp)"; code=0
-            code="$(curl -sS -w '%{http_code}' -o "${body}" \
-              -H "Authorization: ${GH_AUTH}" \
-              -H "Accept: application/vnd.github+json" \
-              "${API}/orgs/${ORG}/repos?type=all&per_page=100&page=${page}")" || code=000
-            if [ "${code}" != "200" ]; then
+            body="$(mktemp)"
+            if ! gh api "/orgs/${ORG}/repos?type=all&per_page=100&page=${page}" > "${body}" 2>/dev/null; then
+              code=$(gh api "/orgs/${ORG}/repos?type=all&per_page=100&page=${page}" --include --silent | head -n 1 | awk '{print $2}') || code=403
               mkdir -p "tmp-errors-${ORG}"
               echo "{\"org\":\"${ORG}\",\"repo\":\"(org-level)\",\"stage\":\"list_repos\",\"status\":${code},\"message\":\"GET /orgs/${ORG}/repos page=${page}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
               rm -f "${body}"
@@ -440,12 +436,13 @@ jobs:
 
             # Get repo metadata for default branch
             meta="$(mktemp)"
-            curl -sS -H "Authorization: Bearer ${GH_PAT}" -H "Accept: application/vnd.github+json" \
-              "${API}/repos/${full}" > "${meta}" 2>/dev/null || true
+            if ! gh api "/repos/${full}" > "${meta}" 2>/dev/null; then
+               rm -f "${meta}"
+            fi
 
             if [ "${BRANCH_STRATEGY}" = "main-only" ]; then
               # Only scan default branch
-              default_branch=$(jq -r '.default_branch // "main"' < "${meta}")
+              default_branch=$(jq -r '.default_branch // "main"' < "${meta}" 2>/dev/null || echo "main")
               echo "${default_branch}" > "branches-${full//\//__}.txt"
               rm -f "${meta}"
               echo "1"
@@ -461,12 +458,9 @@ jobs:
             fi
 
             while :; do
-              tmp="$(mktemp)"; code=0
-              code="$(curl -sS -w '%{http_code}' -o "${tmp}" \
-                -H "Authorization: Bearer ${GH_PAT}" \
-                -H "Accept: application/vnd.github+json" \
-                "${API}/repos/${full}/branches?per_page=100&page=${page}")" || code=000
-              if [ "${code}" != "200" ]; then
+              tmp="$(mktemp)"
+              if ! gh api "/repos/${full}/branches?per_page=100&page=${page}" > "${tmp}" 2>/dev/null; then
+                code=$(gh api "/repos/${full}/branches?per_page=100&page=${page}" --include --silent | head -n 1 | awk '{print $2}') || code=403
                 echo "{\"org\":\"${ORG}\",\"repo\":\"${full}\",\"stage\":\"list_branches\",\"status\":${code},\"message\":\"GET /repos/${full}/branches page=${page}\"}" >> "tmp-errors-${ORG}/errors.ndjson"
                 rm -f "${tmp}"; break
               fi
@@ -475,7 +469,7 @@ jobs:
               if [ "${count}" -eq 0 ]; then rm -f "${tmp}"; break; fi
 
               # Filter branches based on strategy
-              if [ "${BRANCH_STRATEGY}" = "main-recent" ] && [ -n "${CUTOFF_DATE}" ]; then
+              if [ "${BRANCH_STRATEGY}" = "main-recent" ] && [ -n "${CUTOFF_DATE}" ] && [ -f "${meta}" ]; then
                 # Get default branch + recent branches
                 default_branch=$(jq -r '.default_branch // "main"' < "${meta}")
                 jq -r --arg cutoff "${CUTOFF_DATE}" --arg default "${default_branch}" \
@@ -649,6 +643,7 @@ jobs:
 
   summarize-org:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [plan, scan-org]
     strategy:
       fail-fast: false
@@ -663,6 +658,7 @@ jobs:
       GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
       # Fallback to PAT
       GH_PAT: ${{ secrets.GH_PAT }}
+      GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
       RUN_URL: ${{ github.run_url }}
       OPEN_ISSUES: ${{ inputs.open_issues }}
       INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
@@ -777,6 +773,7 @@ jobs:
 
   workflow-summary:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [plan, summarize-org]
     if: always()
     steps:
