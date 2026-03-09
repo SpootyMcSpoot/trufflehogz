@@ -666,13 +666,14 @@ class TestGHClient:
 class TestProcessRepo:
     """Integration tests for process_repo function."""
 
+    @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
     @mock.patch.object(GHClient, 'search_issue_by_title')
     @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
     @mock.patch.object(GHClient, 'create_issue')
     @mock.patch.object(GHClient, 'create_labels_if_needed')
     def test_process_repo_creates_issue(self, mock_labels, mock_create, mock_hash_search, 
-                                         mock_title_search, mock_meta):
+                                         mock_title_search, mock_meta, mock_for_org):
         """Test that process_repo creates an issue when none exists."""
         from trufflehog_scanner import process_repo
         
@@ -683,6 +684,7 @@ class TestProcessRepo:
         mock_labels.return_value = None
 
         client = GHClient(token="fake-token", dry_run=False)
+        mock_for_org.return_value = client
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
@@ -698,10 +700,12 @@ class TestProcessRepo:
         assert repo == "owner/repo"
         assert created is True
         mock_create.assert_called_once()
+        mock_for_org.assert_called_once_with("owner")
 
+    @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
     @mock.patch.object(GHClient, 'search_issue_by_title')
-    def test_process_repo_skips_existing_issue(self, mock_title_search, mock_meta):
+    def test_process_repo_skips_existing_issue(self, mock_title_search, mock_meta, mock_for_org):
         """Test that process_repo skips when issue already exists."""
         from trufflehog_scanner import process_repo
         
@@ -709,6 +713,7 @@ class TestProcessRepo:
         mock_title_search.return_value = True  # Issue exists
 
         client = GHClient(token="fake-token", dry_run=False)
+        mock_for_org.return_value = client
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
@@ -724,13 +729,14 @@ class TestProcessRepo:
         assert repo == "owner/repo"
         assert created is False
 
+    @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
     @mock.patch.object(GHClient, 'search_issue_by_title')
     @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
     @mock.patch.object(GHClient, 'create_issue')
     @mock.patch.object(GHClient, 'create_labels_if_needed')
     def test_process_repo_force_create_bypasses_dedup(self, mock_labels, mock_create, 
-                                                        mock_hash_search, mock_title_search, mock_meta):
+                                                        mock_hash_search, mock_title_search, mock_meta, mock_for_org):
         """Test that force_create=True bypasses deduplication checks."""
         from trufflehog_scanner import process_repo
         
@@ -741,6 +747,7 @@ class TestProcessRepo:
         mock_labels.return_value = None
 
         client = GHClient(token="fake-token", dry_run=False)
+        mock_for_org.return_value = client
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
@@ -761,14 +768,16 @@ class TestProcessRepo:
         mock_hash_search.assert_not_called()
         mock_create.assert_called_once()
 
+    @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
-    def test_process_repo_skips_archived_repo(self, mock_meta):
+    def test_process_repo_skips_archived_repo(self, mock_meta, mock_for_org):
         """Test that process_repo skips archived repositories."""
         from trufflehog_scanner import process_repo
         
         mock_meta.return_value = {"archived": True, "disabled": False}
 
         client = GHClient(token="fake-token", dry_run=False)
+        mock_for_org.return_value = client
         items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
         
         repo, created = process_repo(
@@ -783,6 +792,94 @@ class TestProcessRepo:
         
         assert repo == "owner/repo"
         assert created is False
+
+
+class TestMultiOrgAuth:
+    """Tests for multi-org GitHub App token support."""
+
+    def test_for_org_returns_self_without_app_creds(self):
+        """Without App credentials, for_org returns the same client (PAT mode)."""
+        client = GHClient(token="pat-token", dry_run=False)
+        result = client.for_org("some-org")
+        assert result is client
+        assert result.token == "pat-token"
+
+    def test_for_org_returns_self_with_empty_app_creds(self):
+        """With empty App credentials, for_org returns the same client."""
+        client = GHClient(token="pat-token", dry_run=False, app_id="", app_private_key="")
+        result = client.for_org("some-org")
+        assert result is client
+
+    @mock.patch.object(GHClient, '_get_installation_for_org')
+    @mock.patch('trufflehog_scanner.get_github_app_token')
+    def test_for_org_gets_scoped_token(self, mock_get_token, mock_get_install):
+        """for_org should look up installation ID and get an org-scoped token."""
+        mock_get_install.return_value = 99999
+        mock_get_token.return_value = "ghs_org_scoped_token"
+
+        client = GHClient(token="default-token", dry_run=False,
+                          app_id="12345", app_private_key="fake-key")
+        result = client.for_org("SLAC")
+
+        mock_get_install.assert_called_once_with("SLAC")
+        mock_get_token.assert_called_once_with("12345", "fake-key", "99999")
+        assert result.token == "ghs_org_scoped_token"
+        assert result is not client  # Should be a new client
+
+    @mock.patch.object(GHClient, '_get_installation_for_org')
+    @mock.patch('trufflehog_scanner.get_github_app_token')
+    def test_for_org_caches_token(self, mock_get_token, mock_get_install):
+        """Repeated for_org calls for the same org should use cached token."""
+        mock_get_install.return_value = 99999
+        mock_get_token.return_value = "ghs_cached"
+
+        client = GHClient(token="default-token", dry_run=False,
+                          app_id="12345", app_private_key="fake-key")
+        result1 = client.for_org("SLAC")
+        result2 = client.for_org("SLAC")
+
+        # Should only call the API once (cached on second call)
+        mock_get_install.assert_called_once()
+        mock_get_token.assert_called_once()
+        assert result1.token == "ghs_cached"
+        assert result2.token == "ghs_cached"
+
+    @mock.patch.object(GHClient, '_get_installation_for_org')
+    @mock.patch('trufflehog_scanner.get_github_app_token')
+    def test_for_org_different_orgs_get_different_tokens(self, mock_get_token, mock_get_install):
+        """Different orgs should get different installation lookups."""
+        mock_get_install.side_effect = [111, 222]
+        mock_get_token.side_effect = ["ghs_token_a", "ghs_token_b"]
+
+        client = GHClient(token="default-token", dry_run=False,
+                          app_id="12345", app_private_key="fake-key")
+        result_a = client.for_org("org-a")
+        result_b = client.for_org("org-b")
+
+        assert result_a.token == "ghs_token_a"
+        assert result_b.token == "ghs_token_b"
+        assert mock_get_install.call_count == 2
+
+    @mock.patch.object(GHClient, '_get_installation_for_org')
+    def test_for_org_falls_back_on_error(self, mock_get_install):
+        """If installation lookup fails, for_org returns the original client."""
+        mock_get_install.side_effect = Exception("API error")
+
+        client = GHClient(token="default-token", dry_run=False,
+                          app_id="12345", app_private_key="fake-key")
+        result = client.for_org("bad-org")
+
+        assert result is client  # Falls back to original
+        assert result.token == "default-token"
+
+    def test_for_org_preserves_dry_run(self):
+        """Child clients from for_org should preserve dry_run setting."""
+        client = GHClient(token="token", dry_run=True,
+                          app_id="12345", app_private_key="fake-key")
+        with mock.patch.object(client, '_get_installation_for_org', return_value=100):
+            with mock.patch('trufflehog_scanner.get_github_app_token', return_value="ghs_new"):
+                result = client.for_org("test-org")
+                assert result.dry_run is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

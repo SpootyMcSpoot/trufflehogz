@@ -20,6 +20,7 @@ Production-ready GitHub Actions workflows that scan multiple GitHub organization
 - [Testing](#testing)
 - [Remediating Discovered Secrets](#remediating-discovered-secrets)
 - [Troubleshooting](#troubleshooting)
+- [NIST 800-53 Rev 5 Compliance Coverage](#nist-800-53-rev-5-compliance-coverage)
 - [Documentation Index](#documentation-index)
 
 ---
@@ -384,8 +385,8 @@ pip install -r requirements.txt
 python3 -m pytest test_trufflehog_scanner.py -v
 ```
 
-**122 tests** covering: severity classification, label generation, hash deduplication, NDJSON loading,
-issue body generation, summary output, GHClient API calls, rate limiting, and end-to-end `process_repo` flows.
+**142 tests** covering: severity classification, label generation, hash deduplication, NDJSON loading,
+issue body generation, summary output, GHClient API calls, rate limiting, multi-org authentication, and end-to-end `process_repo` flows.
 
 ### Self-Scan Workflow
 
@@ -446,6 +447,91 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed solutions and performa
 
 ---
 
+## NIST 800-53 Rev 5 Compliance Coverage
+
+This scanner directly supports or contributes to the following [NIST SP 800-53 Rev 5](https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final) security controls.
+
+### Credential & Authenticator Management
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **IA-5** | Authenticator Management | Detects exposed credentials (17 detector types: AWS, GCP, Azure, GitHub, Slack, SSH, Stripe, SendGrid, etc.) across all branches and full git history of 15+ organizations |
+| **IA-5(1)** | Password-Based Authentication | Identifies hardcoded passwords and database connection strings (Postgres, MongoDB) in source code and config files |
+| **IA-5(7)** | No Embedded Unencrypted Static Authenticators | Scans for API keys, tokens, and secrets stored in plaintext — the primary purpose of this tool |
+
+### System Monitoring & Alerting
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **SI-4** | System Monitoring | Weekly scheduled scans (cron) across all org repos; push-triggered self-scan validates scanner integrity continuously |
+| **SI-4(2)** | Automated Tools and Mechanisms for Real-Time Analysis | Automated GitHub Actions workflow with parallel sharded scanning; no manual intervention required |
+| **SI-4(5)** | System-Generated Alerts | Auto-creates GitHub issues with severity labels (`sec:critical`, `sec:high`, `sec:medium`, `sec:low`) and `needs-triage` for verified findings |
+| **SI-4(12)** | Automated Organization-Generated Alerts | Issues include detector-specific remediation steps, file/line/commit links, and rotation guides for 13 credential types |
+
+### Vulnerability & Risk Assessment
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **RA-5** | Vulnerability Monitoring and Scanning | Scans source code repositories for exposed secrets — a critical vulnerability class; configurable scan depth (full history, recent, incremental) |
+| **RA-5(2)** | Update Vulnerabilities to Be Scanned | Dependabot keeps TruffleHog version and all GitHub Actions dependencies updated weekly |
+| **RA-5(5)** | Privileged Access | GitHub App authentication with org-scoped tokens (`for_org()`) uses minimum required permissions; workflows enforce `permissions:` declarations |
+
+### Incident Response
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **IR-4** | Incident Handling | Every issue includes step-by-step remediation: credential rotation, git history cleanup (`git-filter-repo`), and force-push coordination |
+| **IR-5** | Incident Monitoring | Workflow summaries provide per-org and per-repo breakdowns of verified/unverified findings with severity classification |
+| **IR-6** | Incident Reporting | Issues are created directly in the affected repository with full context: detector type, file path, line number, commit SHA, blame link, and scan timestamp |
+
+### Configuration & Change Management
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **CM-3** | Configuration Change Control | PR validation pipeline (5-stage gate: actionlint, yamllint, SHA-pinning, permissions audit, Python syntax) enforces change control on all workflow modifications |
+| **CM-6** | Configuration Settings | Detects secrets in configuration files (`.env`, `settings.php`, `docker-compose.yml`, JSON configs); false-positive patterns are version-controlled |
+| **CM-14** | Signed Components | All GitHub Actions are SHA-pinned (40-char commit hash); PR validation rejects unpinned references |
+
+### Audit & Accountability
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **AU-2** | Event Logging | Structured logging with timestamp, log level, thread name, and function name for every API call, issue creation, and dedup decision |
+| **AU-6** | Audit Record Review | Workflow summaries with severity breakdown tables, per-repo findings, top offenders, and error reports; findings stored as downloadable NDJSON artifacts |
+| **AU-6(1)** | Automated Process Integration | Summary written to `GITHUB_STEP_SUMMARY` and automatically linked from the Actions run page; issues auto-labeled for triage queues |
+| **AU-12** | Audit Record Generation | Per-repo scan diagnostics (`SCAN_SUMMARY.txt`), structured error NDJSON (`errors-{ORG}.ndjson`), and per-shard troubleshoot bundles captured as artifacts |
+
+### Access Control & Least Privilege
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **AC-6** | Least Privilege | Workflows declare minimal `permissions:` (`contents: read`, `issues: write`); security baseline check flags `write-all`; `persist-credentials: false` on all checkouts |
+| **AC-6(1)** | Authorize Access to Security Functions | GitHub App tokens are org-scoped (minted per-org via `for_org()`); PAT fallback uses `repo` + `read:org` only |
+
+### Information Protection
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **SC-28** | Protection of Information at Rest | Identifies unencrypted secrets stored in repositories that should use vaults, KMS, or environment variables |
+| **SC-28(1)** | Cryptographic Protection | Flags credentials that should be managed by secret managers (AWS KMS, GCP Secret Manager, Azure Key Vault, HashiCorp Vault) |
+
+### System & Services Acquisition
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **SA-11** | Developer Testing and Evaluation | 142 unit tests; self-scan workflow validates scanner on every push against intentional test fixtures (≥20 expected findings) |
+| **SA-15** | Development Process, Standards, and Tools | Supply chain protections: SHA-pinned actions, Dependabot, Semgrep SAST, security baseline checks, PR validation gates |
+
+### Supply Chain Risk Management
+
+| Control | Name | How This Scanner Addresses It |
+|---------|------|-------------------------------|
+| **SR-3** | Supply Chain Controls and Processes | SHA-pinned GitHub Actions validated against trusted org allowlist (`actions`, `github`, `docker`, `trufflesecurity`); Dependabot for dependency updates |
+| **SR-4** | Provenance | Docker image pinned to exact version tag; all dependency versions tracked in `requirements.txt` |
+| **SR-11** | Component Authenticity | PR validation fails if any action reference uses tag-based versioning instead of SHA; security baseline enforces the same |
+
+---
+
 ## Documentation Index
 
 | Document | Description |
@@ -460,6 +546,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed solutions and performa
 ## Resources
 
 - [TruffleHog OSS](https://github.com/trufflesecurity/trufflehog)
+- [NIST SP 800-53 Rev 5 Control Catalog](https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final)
 - [GitHub Actions Documentation](https://docs.github.com/en/actions)
 - [Removing Sensitive Data from a Repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)
 - [GitHub Secret Scanning](https://docs.github.com/en/code-security/secret-scanning)

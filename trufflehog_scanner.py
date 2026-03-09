@@ -560,10 +560,60 @@ def is_excluded(o: Dict[str, Any], regexes: List[re.Pattern]) -> bool:
 # ---------------------------- GitHub API ----------------------------
 
 class GHClient:
-    def __init__(self, token: str, dry_run: bool = False):
+    def __init__(self, token: str, dry_run: bool = False,
+                 app_id: str = "", app_private_key: str = ""):
         self.token = token
         self.api_base = API_BASE
         self.dry_run = dry_run
+        self._app_id = app_id
+        self._app_private_key = app_private_key
+        self._org_token_cache: Dict[str, str] = {}  # org -> installation access token
+
+    def _get_installation_for_org(self, org: str) -> int:
+        """Look up the GitHub App installation ID for a given org via the App JWT."""
+        if not JWT_AVAILABLE:
+            raise RuntimeError("PyJWT required for multi-org App auth")
+        now = int(time.time())
+        payload = {'iat': now, 'exp': now + (10 * 60), 'iss': self._app_id}
+        jwt_token = jwt.encode(payload, self._app_private_key, algorithm='RS256')
+
+        GLOBAL_LIMITER.wait()
+        url = f"{self.api_base}/orgs/{org}/installation"
+        req = Request(url, method='GET')
+        req.add_header('Authorization', f'Bearer {jwt_token}')
+        req.add_header('Accept', 'application/vnd.github+json')
+        req.add_header('X-GitHub-Api-Version', '2022-11-28')
+        with urlopen(req, timeout=DEFAULT_API_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            installation_id = data.get('id')
+            logging.info("Found installation %s for org %s", installation_id, org)
+            return installation_id
+
+    def for_org(self, org: str) -> 'GHClient':
+        """Return a GHClient with an installation token scoped to the target org.
+
+        GitHub App installation tokens are org-scoped: a token minted for org A
+        cannot access private repos in org B.  When the scanner processes findings
+        across multiple orgs, each org needs its own token.
+
+        Falls back to the default token when App credentials are not available
+        (e.g. PAT-based auth) or when the lookup fails.
+        """
+        if not self._app_id or not self._app_private_key:
+            return self  # PAT auth — token already works cross-org
+
+        if org in self._org_token_cache:
+            return GHClient(token=self._org_token_cache[org], dry_run=self.dry_run)
+
+        try:
+            installation_id = self._get_installation_for_org(org)
+            token = get_github_app_token(self._app_id, self._app_private_key, str(installation_id))
+            self._org_token_cache[org] = token
+            logging.info("Obtained org-scoped token for %s (installation=%s)", org, installation_id)
+            return GHClient(token=token, dry_run=self.dry_run)
+        except Exception as e:
+            logging.warning("Failed to get org-scoped token for %s, using default: %s", org, e)
+            return self
 
     def _req(self, method: str, path: str, payload: Optional[dict], attempt: int) -> dict:
         GLOBAL_LIMITER.wait()
@@ -1392,6 +1442,10 @@ def process_repo(repo: str,
                  dry_run: bool,
                  scanner_repo: str = "",
                  force_create: bool = False) -> Tuple[str, bool]:
+    # Get an org-scoped token for the target repo's org (no-op for PAT auth)
+    org = repo.split("/")[0] if "/" in repo else ""
+    if org:
+        gh = gh.for_org(org)
     logging.info("Processing repo %s with %d finding(s)", repo, len(items))
     meta = gh.repo_meta(repo)
     if not repo_is_actionable(meta):
@@ -1567,7 +1621,9 @@ def main() -> int:
             logging.info("No verified findings detected after filtering; no issues created")
         return 0
 
-    gh = GHClient(token=token, dry_run=args.dry_run)
+    app_id = os.environ.get('GH_APP_ID', '')
+    app_private_key = os.environ.get('GH_APP_PRIVATE_KEY', '')
+    gh = GHClient(token=token, dry_run=args.dry_run, app_id=app_id, app_private_key=app_private_key)
     extra_labels = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
     max_workers = args.max_workers or max(1, min(8, (os.cpu_count() or 2) * 2))
 
