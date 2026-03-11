@@ -1,0 +1,126 @@
+# TruffleHog Issue Feedback Workflow
+# ===================================
+# Automatically processes /trufflehog comment commands on TruffleHog issues.
+# When a user comments with a command like "/trufflehog false-positive",
+# this workflow applies the corresponding label and optionally closes the issue.
+#
+# This workflow runs on the scanner repo itself. For target repos where
+# TruffleHog creates issues, the scanner's process_comment_commands()
+# method handles command processing during each scan run.
+#
+# To deploy this in other orgs, copy this file to:
+#   .github/workflows/issue-feedback.yml  (in the org's .github repo)
+
+name: TruffleHog Issue Feedback
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  handle-command:
+    # Only run on TruffleHog issues with /trufflehog commands
+    if: >-
+      contains(github.event.issue.title, '[TruffleHog]') &&
+      startsWith(github.event.comment.body, '/trufflehog')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process command
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const body = context.payload.comment.body.trim().toLowerCase();
+            const user = context.payload.comment.user.login;
+
+            const commands = {
+              '/trufflehog false-positive': {
+                label: 'trufflehog:false-positive',
+                close: false,
+                message: 'Marked as **false positive**. This finding will be suppressed on future scans.'
+              },
+              '/trufflehog accepted-risk': {
+                label: 'trufflehog:accepted-risk',
+                close: false,
+                message: 'Marked as **accepted risk**. This finding will be suppressed on future scans.'
+              },
+              '/trufflehog wont-fix': {
+                label: 'trufflehog:wont-fix',
+                close: false,
+                message: 'Marked as **won\'t fix**. This finding will be suppressed on future scans.'
+              },
+              '/trufflehog remediated': {
+                label: 'trufflehog:remediated',
+                close: true,
+                message: 'Marked as **remediated**. Closing this issue.'
+              }
+            };
+
+            // Find matching command
+            let matched = null;
+            for (const [cmd, action] of Object.entries(commands)) {
+              if (body.startsWith(cmd)) {
+                matched = { cmd, ...action };
+                break;
+              }
+            }
+
+            if (!matched) {
+              core.info(`No matching command found in: ${body}`);
+              return;
+            }
+
+            core.info(`Processing command: ${matched.cmd} from @${user}`);
+
+            // Ensure label exists (create if needed)
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: matched.label,
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                const labelColors = {
+                  'trufflehog:false-positive': 'cfd3d7',
+                  'trufflehog:accepted-risk': 'fbca04',
+                  'trufflehog:wont-fix': 'ffffff',
+                  'trufflehog:remediated': '0e8a16',
+                };
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: matched.label,
+                  color: labelColors[matched.label] || 'ededed',
+                });
+              }
+            }
+
+            // Add label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [matched.label],
+            });
+
+            // Add acknowledging comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ @${user} ${matched.message}\n\n_Label \`${matched.label}\` applied._`,
+            });
+
+            // Close if remediated
+            if (matched.close) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+            }

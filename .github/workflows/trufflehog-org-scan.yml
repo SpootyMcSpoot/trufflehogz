@@ -300,7 +300,7 @@ jobs:
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
@@ -324,7 +324,7 @@ jobs:
 
       - name: Prime/restore TruffleHog image cache
         if: ${{ matrix.will_warn != true }}
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
         with:
           path: ${{ env.TRUFFLEHOG_CACHE_FILE }}
           key: trufflehog-image-${{ env.TRUFFLEHOG_VERSION }}
@@ -628,7 +628,7 @@ jobs:
           [ -f "diag-${ORG}/SCAN_SUMMARY.txt" ] || : > "diag-${ORG}/SCAN_SUMMARY.txt"
 
       - name: Upload per-shard artifacts (findings/errors)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
         with:
           name: trufflehog-findings-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -638,7 +638,7 @@ jobs:
           compression-level: 6
 
       - name: Upload per-shard troubleshoot bundle (curated)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
         with:
           name: trufflehog-troubleshoot-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -668,7 +668,7 @@ jobs:
       INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
       VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
@@ -678,7 +678,7 @@ jobs:
           pip install PyJWT cryptography
 
       - name: Download shard artifacts for org
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3  # v8.0.0
         with:
           pattern: trufflehog-findings-${{ env.ORG }}-shard-*-of-*
           path: merge/${{ env.ORG }}
@@ -766,7 +766,7 @@ jobs:
           fi
 
       - name: Upload merged artifacts (per-org)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
         with:
           name: trufflehog-findings-${{ env.ORG }}-ALL
           path: |
