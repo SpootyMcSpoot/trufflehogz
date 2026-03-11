@@ -1,0 +1,230 @@
+# Security Baseline Check — validates all workflows meet minimum security standards
+# Adapted from slac-templates/security-baseline-check.yml for trufflehog repo
+# Checks: permissions, timeouts, SHA-pinning, no hardcoded secrets,
+#          pull_request_target safety, concurrency hints
+
+name: Security Baseline Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/*.yml'
+      - '.github/workflows/*.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-baseline:
+    name: Security Baseline Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run security baseline checks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Running security baseline checks on all workflows..."
+          echo ""
+
+          TOTAL_WORKFLOWS=0
+          PASSED=0
+          FAILED=0
+          WARNINGS=0
+
+          declare -A RESULTS
+
+          while IFS= read -r workflow_file; do
+            TOTAL_WORKFLOWS=$((TOTAL_WORKFLOWS + 1))
+            WORKFLOW_NAME=$(basename "$workflow_file")
+            ISSUES=0
+            WORKFLOW_WARNINGS=0
+
+            echo "========================================="
+            echo "Checking: $WORKFLOW_NAME"
+            echo "========================================="
+
+            # CRITICAL: Check 1 - Permissions defined
+            if grep -q "^permissions:" "$workflow_file"; then
+              echo "  [OK] Has permissions defined"
+
+              if grep -E "permissions:.*write-all" "$workflow_file" >/dev/null 2>&1; then
+                echo "  [ERROR] CRITICAL: Uses 'write-all' permissions (FAIL)"
+                ISSUES=$((ISSUES + 1))
+              fi
+
+              if grep -E "^\s+contents:\s+write" "$workflow_file" >/dev/null 2>&1; then
+                echo "  [WARNING] Uses 'contents: write' - verify necessity"
+                WORKFLOW_WARNINGS=$((WORKFLOW_WARNINGS + 1))
+              fi
+            else
+              echo "  [WARNING] No explicit permissions - defaults to permissive"
+              WORKFLOW_WARNINGS=$((WORKFLOW_WARNINGS + 1))
+            fi
+
+            # CRITICAL: Check 2 - Timeout defined
+            if grep -q "timeout-minutes:" "$workflow_file"; then
+              echo "  [OK] Has timeout-minutes defined"
+            else
+              echo "  [WARNING] No timeout-minutes defined (can lead to stuck jobs)"
+              WORKFLOW_WARNINGS=$((WORKFLOW_WARNINGS + 1))
+            fi
+
+            # CRITICAL: Check 3 - Actions are SHA-pinned
+            if grep -q "^\s*uses:" "$workflow_file"; then
+              UNPINNED=$(grep -E "^\s*uses:.*@(v[0-9]|main|master|develop)" "$workflow_file" | grep -v "^\s*#" || true)
+
+              if [ -n "$UNPINNED" ]; then
+                echo "  [ERROR] CRITICAL: Contains unpinned actions (FAIL)"
+                printf '       %s\n' "$UNPINNED"
+                ISSUES=$((ISSUES + 1))
+              else
+                echo "  [OK] All actions are SHA-pinned or local"
+              fi
+            fi
+
+            # Check 4 - No hardcoded secrets
+            if grep -iE "(password|secret|token|key|api_key):\s*['\"]" "$workflow_file" | grep -v "^\s*#" | grep -v "description:" >/dev/null 2>&1; then
+              echo "  [ERROR] CRITICAL: Possible hardcoded secrets detected (FAIL)"
+              ISSUES=$((ISSUES + 1))
+            else
+              echo "  [OK] No hardcoded secrets detected"
+            fi
+
+            # Check 5 - persist-credentials: false
+            if grep -q "actions/checkout" "$workflow_file"; then
+              if grep -A3 "actions/checkout" "$workflow_file" | grep -q "persist-credentials: false"; then
+                echo "  [OK] Checkout uses persist-credentials: false"
+              else
+                echo "  [WARNING] Checkout may not have persist-credentials: false"
+                WORKFLOW_WARNINGS=$((WORKFLOW_WARNINGS + 1))
+              fi
+            fi
+
+            # Check 6 - Pull request trigger safety
+            if grep -q "pull_request_target:" "$workflow_file"; then
+              echo "  [WARNING] Uses pull_request_target (ensure fork PR safety)"
+              WORKFLOW_WARNINGS=$((WORKFLOW_WARNINGS + 1))
+            fi
+
+            # Check 7 - Concurrency control hint
+            if grep -q "concurrency:" "$workflow_file"; then
+              echo "  [OK] Has concurrency control defined"
+            else
+              if grep -q "pull_request" "$workflow_file"; then
+                echo "  [INFO] Consider adding concurrency control for PR workflows"
+              fi
+            fi
+
+            # Determine overall status
+            if [ "$ISSUES" -eq 0 ]; then
+              echo ""
+              echo "Result: [PASS] PASSED (${WORKFLOW_WARNINGS} warnings)"
+              PASSED=$((PASSED + 1))
+              RESULTS["$WORKFLOW_NAME"]="PASS"
+            else
+              echo ""
+              echo "Result: [FAIL] FAILED (${ISSUES} critical issues)"
+              FAILED=$((FAILED + 1))
+              RESULTS["$WORKFLOW_NAME"]="FAIL"
+            fi
+
+            WARNINGS=$((WARNINGS + WORKFLOW_WARNINGS))
+            echo ""
+
+          done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+
+          # Generate summary
+          {
+            echo "## Security Baseline Validation Results"
+            echo ""
+            echo "**Summary:**"
+            echo "- Total workflows checked: ${TOTAL_WORKFLOWS}"
+            echo "- Passed: ${PASSED}"
+            echo "- Failed: ${FAILED}"
+            echo "- Total warnings: ${WARNINGS}"
+            echo ""
+            echo "| Workflow | Status |"
+            echo "|----------|--------|"
+
+            for workflow in "${!RESULTS[@]}"; do
+              status="${RESULTS[$workflow]}"
+              if [ "$status" = "PASS" ]; then
+                echo "| ${workflow} | ✅ PASS |"
+              else
+                echo "| ${workflow} | ❌ FAIL |"
+              fi
+            done | sort
+
+            echo ""
+            echo "---"
+            echo ""
+
+            if [ "$FAILED" -eq 0 ]; then
+              echo "### ✅ All Workflows Pass Security Baseline"
+              if [ "$WARNINGS" -gt 0 ]; then
+                echo ""
+                echo "**Note:** ${WARNINGS} warning(s) detected. Review warnings above for potential improvements."
+              fi
+            else
+              echo "### ❌ Security Baseline Validation Failed"
+              echo ""
+              echo "${FAILED} workflow(s) failed security baseline checks."
+              echo "**Critical issues must be fixed before merging.**"
+            fi
+
+            echo ""
+            echo "#### Security Baseline Requirements:"
+            echo ""
+            echo "1. **Explicit permissions** — All workflows must define \`permissions:\`"
+            echo "2. **No write-all** — Never use \`permissions: write-all\`"
+            echo "3. **SHA-pinned actions** — All third-party actions must be pinned by commit SHA"
+            echo "4. **No hardcoded secrets** — Secrets must use \`secrets.\` or environment variables"
+            echo "5. **Timeouts** — Workflows should define \`timeout-minutes\`"
+            echo "6. **persist-credentials: false** — Checkout steps should not persist credentials"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Exit with error if any workflows failed
+          if [ "$FAILED" -gt 0 ]; then
+            echo ""
+            echo "[FAIL] Security baseline validation FAILED — ${FAILED} workflow(s) have critical issues"
+            exit 1
+          fi
+
+          echo "[PASS] All workflows pass security baseline checks"
+
+      - name: Check for security documentation
+        shell: bash
+        run: |
+          echo "Checking for security documentation..."
+
+          {
+            echo ""
+            echo "#### Security Documentation"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -f "SECURITY.md" ]; then
+            echo "  [OK] SECURITY.md exists"
+            echo "- ✅ SECURITY.md present" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "  [INFO] No SECURITY.md found (consider adding)"
+            echo "- ℹ️ SECURITY.md not found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -f "README.md" ] && grep -qi "security" README.md; then
+            echo "  [OK] Security documentation in README.md"
+            echo "- ✅ Security section in README.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "  [WARNING] No security section in README.md"
+            echo "- ⚠️ No security section in README.md" >> "$GITHUB_STEP_SUMMARY"
+          fi

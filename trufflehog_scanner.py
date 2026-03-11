@@ -267,6 +267,24 @@ DETECTOR_TYPES = {
     "Generic": "secret:generic",
 }
 
+# Suppression labels — applied to issues to signal the scanner to skip findings
+# When an issue has one of these labels, its findings hash is treated as suppressed.
+SUPPRESSION_LABELS = {
+    "trufflehog:false-positive": {"color": "cfd3d7", "description": "Not a real secret — scanner false positive"},
+    "trufflehog:accepted-risk": {"color": "fbca04", "description": "Team acknowledges and accepts the risk"},
+    "trufflehog:wont-fix": {"color": "ffffff", "description": "Will not be remediated (test fixture, revoked, etc.)"},
+    "trufflehog:remediated": {"color": "0e8a16", "description": "Secret has been rotated/removed"},
+}
+SUPPRESSION_LABEL_NAMES = set(SUPPRESSION_LABELS.keys())
+
+# Comment commands that map to suppression labels
+COMMENT_COMMANDS = {
+    "/trufflehog false-positive": "trufflehog:false-positive",
+    "/trufflehog accepted-risk": "trufflehog:accepted-risk",
+    "/trufflehog wont-fix": "trufflehog:wont-fix",
+    "/trufflehog remediated": "trufflehog:remediated",
+}
+
 # I5: Detector-specific remediation guidance for issue bodies
 DETECTOR_REMEDIATION = {
     "AWS": (
@@ -839,6 +857,143 @@ class GHClient:
             logging.error("Failed to create issue in %s: HTTP %d - %s", repo, e.code, e.reason)
             raise
 
+    def create_suppression_labels(self, repo: str) -> None:
+        """Create the suppression labels (with colors and descriptions) in the target repo.
+        Uses POST-first strategy; 422/409 means label already exists."""
+        for label_name, props in SUPPRESSION_LABELS.items():
+            try:
+                self.call("POST", f"/repos/{repo}/labels", {
+                    "name": label_name,
+                    "color": props["color"],
+                    "description": props["description"],
+                })
+                logging.info("Created suppression label %s in %s", label_name, repo)
+            except HTTPError as e:
+                if e.code in (409, 422):
+                    pass  # Already exists
+                else:
+                    logging.warning("Could not create suppression label %s in %s (HTTP %d)", label_name, repo, e.code)
+
+    def get_suppressed_hashes(self, repo: str, title_prefix: str = "[TruffleHog]") -> set:
+        """Fetch findings hashes from issues that have suppression labels.
+
+        Returns a set of hash strings. If the current scan's findings hash
+        is in this set, the scanner should skip issue creation for that repo.
+
+        Searches issues labeled with any of SUPPRESSION_LABEL_NAMES, extracts
+        the 8-char hex hash from the title pattern: [TruffleHog] Secrets scan report (HASH)
+        """
+        suppressed: set = set()
+        hash_re = re.compile(r'\(([a-f0-9]{8})\)\s*$')
+
+        for label in SUPPRESSION_LABEL_NAMES:
+            try:
+                encoded_label = urlquote(label, safe='')
+                for page in [1, 2]:
+                    data = self.call(
+                        "GET",
+                        f"/repos/{repo}/issues?state=all&labels={encoded_label}&per_page=30&page={page}",
+                        None,
+                    )
+                    if not isinstance(data, list):
+                        break
+                    for issue in data:
+                        if not isinstance(issue, dict):
+                            continue
+                        title = issue.get("title", "")
+                        if title_prefix not in title:
+                            continue
+                        m = hash_re.search(title)
+                        if m:
+                            suppressed.add(m.group(1))
+                    if len(data) < 30:
+                        break
+            except HTTPError as e:
+                logging.warning("Failed to check suppression label %s in %s: HTTP %d", label, repo, e.code)
+
+        if suppressed:
+            logging.info("Found %d suppressed finding hash(es) in %s: %s", len(suppressed), repo, suppressed)
+        return suppressed
+
+    def process_comment_commands(self, repo: str, title_prefix: str = "[TruffleHog]") -> int:
+        """Scan open TruffleHog issues for /trufflehog comment commands.
+
+        When a comment contains a recognized command (e.g., '/trufflehog false-positive'),
+        the corresponding label is applied to the issue automatically. This allows teams
+        to suppress findings via comments without needing the label sidebar.
+
+        Returns the number of labels applied.
+        """
+        if self.dry_run:
+            logging.info("DRY RUN: would process comment commands in %s", repo)
+            return 0
+
+        applied = 0
+        try:
+            for page in [1, 2]:
+                data = self.call(
+                    "GET",
+                    f"/repos/{repo}/issues?state=open&per_page=30&page={page}",
+                    None,
+                )
+                if not isinstance(data, list):
+                    break
+                for issue in data:
+                    if not isinstance(issue, dict):
+                        continue
+                    title = issue.get("title", "")
+                    if title_prefix not in title:
+                        continue
+
+                    # Get existing labels on this issue
+                    existing_labels = set()
+                    for lbl in issue.get("labels", []):
+                        if isinstance(lbl, dict):
+                            existing_labels.add(lbl.get("name", ""))
+
+                    issue_number = issue.get("number")
+                    if not issue_number:
+                        continue
+
+                    # Fetch comments for this issue
+                    try:
+                        comments = self.call(
+                            "GET",
+                            f"/repos/{repo}/issues/{issue_number}/comments?per_page=100",
+                            None,
+                        )
+                        if not isinstance(comments, list):
+                            continue
+
+                        for comment in comments:
+                            if not isinstance(comment, dict):
+                                continue
+                            body = (comment.get("body") or "").strip().lower()
+                            for cmd, label in COMMENT_COMMANDS.items():
+                                if body.startswith(cmd) and label not in existing_labels:
+                                    try:
+                                        self.call(
+                                            "POST",
+                                            f"/repos/{repo}/issues/{issue_number}/labels",
+                                            {"labels": [label]},
+                                        )
+                                        logging.info("Applied label %s to %s#%d via comment command", label, repo, issue_number)
+                                        existing_labels.add(label)
+                                        applied += 1
+                                    except HTTPError as e:
+                                        logging.warning("Failed to apply label %s to %s#%d: HTTP %d", label, repo, issue_number, e.code)
+                    except HTTPError as e:
+                        logging.warning("Failed to fetch comments for %s#%d: HTTP %d", repo, issue_number, e.code)
+
+                if len(data) < 30:
+                    break
+        except HTTPError as e:
+            logging.warning("Failed to list issues in %s for comment commands: HTTP %d", repo, e.code)
+
+        if applied > 0:
+            logging.info("Applied %d label(s) from comment commands in %s", applied, repo)
+        return applied
+
 # ---------------------------- Finding processing ----------------------------
 
 def make_finding_key(repo: str, detector: str, path: str,
@@ -1403,11 +1558,41 @@ def build_issue_body(repo: str, items: List[Dict[str, Any]], run_url: str, scann
         "",
     ])
 
-    # I6: False-positive suppression guide
+    # Response Options section — label-based feedback loop
     guidance.extend([
-        "### False Positive?",
-        "If this finding is a false positive (e.g., test fixture, example, or revoked credential),",
-        "add a regex to the exclude patterns file to suppress future alerts:",
+        "---",
+        "",
+        "## 📨 Response Options",
+        "",
+        "Use **labels** or **comment commands** to tell the scanner how to handle this finding on future scans.",
+        "Adding a suppression label prevents the scanner from re-creating this issue.",
+        "",
+        "### Quick Actions (add a label in the sidebar)",
+        "",
+        "| Label | When to Use | Effect |",
+        "|---|---|---|",
+        "| `trufflehog:false-positive` | Not a real secret (test data, example, docs) | 🚫 Suppressed on future scans |",
+        "| `trufflehog:accepted-risk` | Real but team accepts the risk | 🚫 Suppressed on future scans |",
+        "| `trufflehog:wont-fix` | Won't remediate (already revoked, low impact) | 🚫 Suppressed on future scans |",
+        "| `trufflehog:remediated` | Secret rotated and removed from history | ✅ Informational (close issue) |",
+        "",
+        "### Comment Commands",
+        "",
+        "Or comment on this issue with one of these commands:",
+        "",
+        "```",
+        "/trufflehog false-positive",
+        "/trufflehog accepted-risk",
+        "/trufflehog wont-fix",
+        "/trufflehog remediated",
+        "```",
+        "",
+        "The scanner will automatically apply the corresponding label on the next scan run.",
+        "",
+        "### Manual Suppression (regex allowlist)",
+        "",
+        "To permanently suppress this detector/file combination across all repos, add a regex",
+        "to the exclude patterns file in the scanner repository:",
         "",
         "```",
         "# In .github/trufflehog/false_positives.txt, add a line like:",
@@ -1451,11 +1636,25 @@ def process_repo(repo: str,
     if not repo_is_actionable(meta):
         return (repo, False)
 
+    # Process any /trufflehog comment commands on existing issues (applies labels)
+    try:
+        gh.process_comment_commands(repo, title_prefix)
+    except Exception as e:
+        logging.warning("Comment command processing failed for %s: %s", repo, e)
+
     # I9/E6: Compute unique hash; title uses hash only (no date) for cheaper dedup
     findings_hash = compute_findings_hash(items)
     title = f"{title_prefix} Secrets scan report ({findings_hash})"
 
     if not force_create:
+        # Check suppression labels: if an existing issue with this hash has been
+        # labeled false-positive/accepted-risk/wont-fix, skip issue creation
+        suppressed_hashes = gh.get_suppressed_hashes(repo, title_prefix)
+        if findings_hash in suppressed_hashes:
+            logging.info("Finding hash %s is suppressed in %s (labeled false-positive/accepted-risk/wont-fix)",
+                         findings_hash, repo)
+            return (repo, False)
+
         # Primary: exact title match (hash-based, date-free) — 1-2 API calls
         if gh.search_issue_by_title(repo, title):
             logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
@@ -1475,6 +1674,12 @@ def process_repo(repo: str,
         gh.create_labels_if_needed(repo, auto)
     except HTTPError as e:
         logging.warning("Skipping label creation in %s due to HTTP %d; continuing to issue body.", repo, e.code)
+
+    # Create suppression labels so team can use them immediately
+    try:
+        gh.create_suppression_labels(repo)
+    except Exception as e:
+        logging.warning("Suppression label creation failed in %s: %s", repo, e)
 
     body = build_issue_body(repo, items, run_url, scanner_repo, findings_hash=findings_hash)
     try:

@@ -14,6 +14,7 @@ Production-ready GitHub Actions workflows that scan multiple GitHub organization
 - [Workflows](#workflows)
 - [Scanner Features](#scanner-features)
 - [Issue Creation](#issue-creation)
+- [Issue Feedback Loop](#issue-feedback-loop)
 - [Workflow Summary](#workflow-summary)
 - [Configuration Reference](#configuration-reference)
 - [Running Locally](#running-locally)
@@ -131,6 +132,7 @@ All actions are **SHA-pinned** with `persist-credentials: false` on every checko
 | **pr-validation** | Pull requests + push to main | 6-stage gate: actionlint, yamllint, SHA-pinning, permissions, Python syntax, summary |
 | **lint-workflows** | PR/push on workflow file changes | actionlint + ghalint validation |
 | **security-baseline-check** | PR on workflow file changes | Permissions, SHA-pinning, timeouts, secrets audit |
+| **issue-feedback** | Issue comments | Processes `/trufflehog` commands, auto-applies suppression labels |
 
 **Dependabot** is configured for both `pip` and `github-actions` ecosystems (weekly updates).
 
@@ -149,6 +151,7 @@ The `trufflehog_scanner.py` script processes TruffleHog NDJSON output into actio
 | **POST-first label strategy** | Creates labels via POST, falls back gracefully on 422 (already exists) |
 | **Single-pass NDJSON processing** | One file read for all summary stats and breakdowns |
 | **False-positive suppression** | Regex patterns from `.github/trufflehog/false_positives.txt` |
+| **Issue feedback loop** | Label-based suppression + comment commands for false-positive/accepted-risk handling |
 | **Concurrent issue creation** | ThreadPoolExecutor with configurable worker count |
 | **Target repo override** | Consolidate all findings into a single repo (useful for testing) |
 | **GitHub App + PAT auth** | Automatic JWT token generation for GitHub App, PAT as fallback |
@@ -199,13 +202,78 @@ Enable with `open_issues: true` in the workflow dispatch UI, or set `DEFAULT_OPE
 - Findings table: detector, file, line, commit SHA, verified status, redacted preview, clickable link
 - Detector-specific remediation steps (AWS, GCP, Azure, GitHub, Slack, SSH, Stripe, SendGrid, Kubernetes, Docker, Twilio, Private Key)
 - Git history cleanup commands (rebase + git-filter-repo)
-- False-positive suppression guide with file pattern example
+- **Response Options** section with suppression labels, comment commands, and manual regex instructions
 
 > Issues are created **only for verified findings**. Unverified findings appear in the workflow summary.
 
 ### Restricting Issue Creation to Specific Orgs
 
 Set the `TRUFFLEHOG_ISSUES_ORGS` variable (comma-separated) to limit which organizations receive issues. Leave empty or unset to create issues in all scanned orgs.
+
+---
+
+## Issue Feedback Loop
+
+The scanner supports a **closed-loop workflow** where teams can respond to findings directly from the GitHub issue, and those responses are respected on future scans.
+
+### How It Works
+
+1. Scanner creates an issue with a findings hash in the title: `[TruffleHog] Secrets scan report (ab12cd34)`
+2. Team reviews the finding and applies a **suppression label** (or uses a comment command)
+3. On the next scan, the scanner checks existing issues for suppression labels
+4. If the same findings hash has a suppression label, issue creation is **skipped**
+
+### Suppression Labels
+
+These labels are automatically created in each scanned repository:
+
+| Label | Color | When to Use | Scanner Behavior |
+|-------|-------|-------------|------------------|
+| `trufflehog:false-positive` | ⚪ Gray | Not a real secret (test data, example, docs) | Suppressed on future scans |
+| `trufflehog:accepted-risk` | 🟡 Yellow | Real secret, team acknowledges and accepts the risk | Suppressed on future scans |
+| `trufflehog:wont-fix` | ⚫ White | Won't remediate (already revoked, low impact) | Suppressed on future scans |
+| `trufflehog:remediated` | 🟢 Green | Secret has been rotated and removed from history | Informational only |
+
+### Comment Commands
+
+Team members can also comment on a TruffleHog issue with these commands:
+
+```
+/trufflehog false-positive
+/trufflehog accepted-risk
+/trufflehog wont-fix
+/trufflehog remediated
+```
+
+The scanner processes these commands on the next scan run and automatically applies the corresponding label. For **real-time** processing, deploy the `issue-feedback.yml` workflow (included in `.github/workflows/`).
+
+### Suppression Flow
+
+```
+Scan finds secret  →  Creates issue with hash (ab12cd34)
+                          │
+                     Team reviews
+                          │
+               ┌─────────┼───────────┐
+               │                       │
+        Adds label:              Comments:
+   trufflehog:false-positive   /trufflehog false-positive
+               │                       │
+               └───────┼───────────┘
+                       │
+              Next scan runs
+                       │
+           Hash ab12cd34 is in
+          suppressed set → SKIP
+```
+
+### Three-Tier Suppression
+
+| Tier | Mechanism | Scope | Persistence |
+|------|-----------|-------|-------------|
+| **1. Issue label** | Add label in GitHub UI | Per-finding (hash-based) | Until label removed |
+| **2. Comment command** | `/trufflehog false-positive` | Per-finding (hash-based) | Until label removed |
+| **3. Regex allowlist** | Edit `false_positives.txt` | All repos, all scans | Permanent |
 
 ---
 
@@ -480,7 +548,7 @@ This scanner directly supports or contributes to the following [NIST SP 800-53 R
 
 | Control | Name | How This Scanner Addresses It |
 |---------|------|-------------------------------|
-| **IR-4** | Incident Handling | Every issue includes step-by-step remediation: credential rotation, git history cleanup (`git-filter-repo`), and force-push coordination |
+| **IR-4** | Incident Handling | Every issue includes step-by-step remediation, credential rotation, git history cleanup. Issue feedback loop allows teams to mark findings as false-positive, accepted-risk, or remediated via labels/comment commands |
 | **IR-5** | Incident Monitoring | Workflow summaries provide per-org and per-repo breakdowns of verified/unverified findings with severity classification |
 | **IR-6** | Incident Reporting | Issues are created directly in the affected repository with full context: detector type, file path, line number, commit SHA, blame link, and scan timestamp |
 
@@ -519,7 +587,7 @@ This scanner directly supports or contributes to the following [NIST SP 800-53 R
 
 | Control | Name | How This Scanner Addresses It |
 |---------|------|-------------------------------|
-| **SA-11** | Developer Testing and Evaluation | 142 unit tests; self-scan workflow validates scanner on every push against intentional test fixtures (≥20 expected findings) |
+| **SA-11** | Developer Testing and Evaluation | 167 unit tests; self-scan workflow validates scanner on every push against intentional test fixtures (≥20 expected findings) |
 | **SA-15** | Development Process, Standards, and Tools | Supply chain protections: SHA-pinned actions, Dependabot, Semgrep SAST, security baseline checks, PR validation gates |
 
 ### Supply Chain Risk Management

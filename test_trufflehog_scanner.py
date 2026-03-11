@@ -40,6 +40,9 @@ from trufflehog_scanner import (
     write_markdown_summary,
     DETECTOR_REMEDIATION,
     DETECTOR_SEVERITY,
+    SUPPRESSION_LABELS,
+    SUPPRESSION_LABEL_NAMES,
+    COMMENT_COMMANDS,
     RateLimiter,
 )
 
@@ -672,7 +675,11 @@ class TestProcessRepo:
     @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
     @mock.patch.object(GHClient, 'create_issue')
     @mock.patch.object(GHClient, 'create_labels_if_needed')
-    def test_process_repo_creates_issue(self, mock_labels, mock_create, mock_hash_search, 
+    @mock.patch.object(GHClient, 'get_suppressed_hashes')
+    @mock.patch.object(GHClient, 'process_comment_commands')
+    @mock.patch.object(GHClient, 'create_suppression_labels')
+    def test_process_repo_creates_issue(self, mock_supp_labels, mock_comments, mock_suppressed,
+                                         mock_labels, mock_create, mock_hash_search, 
                                          mock_title_search, mock_meta, mock_for_org):
         """Test that process_repo creates an issue when none exists."""
         from trufflehog_scanner import process_repo
@@ -680,8 +687,11 @@ class TestProcessRepo:
         mock_meta.return_value = {"archived": False, "disabled": False}
         mock_title_search.return_value = False
         mock_hash_search.return_value = False
+        mock_suppressed.return_value = set()
+        mock_comments.return_value = 0
         mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/1", "number": 1}
         mock_labels.return_value = None
+        mock_supp_labels.return_value = None
 
         client = GHClient(token="fake-token", dry_run=False)
         mock_for_org.return_value = client
@@ -701,15 +711,22 @@ class TestProcessRepo:
         assert created is True
         mock_create.assert_called_once()
         mock_for_org.assert_called_once_with("owner")
+        mock_suppressed.assert_called_once()  # Suppression check should be called
+        mock_supp_labels.assert_called_once()  # Suppression labels should be created
 
     @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
     @mock.patch.object(GHClient, 'search_issue_by_title')
-    def test_process_repo_skips_existing_issue(self, mock_title_search, mock_meta, mock_for_org):
+    @mock.patch.object(GHClient, 'get_suppressed_hashes')
+    @mock.patch.object(GHClient, 'process_comment_commands')
+    def test_process_repo_skips_existing_issue(self, mock_comments, mock_suppressed,
+                                                mock_title_search, mock_meta, mock_for_org):
         """Test that process_repo skips when issue already exists."""
         from trufflehog_scanner import process_repo
         
         mock_meta.return_value = {"archived": False, "disabled": False}
+        mock_suppressed.return_value = set()
+        mock_comments.return_value = 0
         mock_title_search.return_value = True  # Issue exists
 
         client = GHClient(token="fake-token", dry_run=False)
@@ -735,7 +752,11 @@ class TestProcessRepo:
     @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
     @mock.patch.object(GHClient, 'create_issue')
     @mock.patch.object(GHClient, 'create_labels_if_needed')
-    def test_process_repo_force_create_bypasses_dedup(self, mock_labels, mock_create, 
+    @mock.patch.object(GHClient, 'get_suppressed_hashes')
+    @mock.patch.object(GHClient, 'process_comment_commands')
+    @mock.patch.object(GHClient, 'create_suppression_labels')
+    def test_process_repo_force_create_bypasses_dedup(self, mock_supp_labels, mock_comments, mock_suppressed,
+                                                        mock_labels, mock_create, 
                                                         mock_hash_search, mock_title_search, mock_meta, mock_for_org):
         """Test that force_create=True bypasses deduplication checks."""
         from trufflehog_scanner import process_repo
@@ -745,6 +766,9 @@ class TestProcessRepo:
         mock_hash_search.return_value = True   # Hash would normally match
         mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/2", "number": 2}
         mock_labels.return_value = None
+        mock_suppressed.return_value = set()
+        mock_comments.return_value = 0
+        mock_supp_labels.return_value = None
 
         client = GHClient(token="fake-token", dry_run=False)
         mock_for_org.return_value = client
@@ -766,6 +790,7 @@ class TestProcessRepo:
         # Dedup checks should not be called when force_create=True
         mock_title_search.assert_not_called()
         mock_hash_search.assert_not_called()
+        mock_suppressed.assert_not_called()  # Suppression also skipped
         mock_create.assert_called_once()
 
     @mock.patch.object(GHClient, 'for_org')
@@ -819,9 +844,9 @@ class TestMultiOrgAuth:
 
         client = GHClient(token="default-token", dry_run=False,
                           app_id="12345", app_private_key="fake-key")
-        result = client.for_org("ORG")
+        result = client.for_org("SLAC")
 
-        mock_get_install.assert_called_once_with("ORG")
+        mock_get_install.assert_called_once_with("SLAC")
         mock_get_token.assert_called_once_with("12345", "fake-key", "99999")
         assert result.token == "ghs_org_scoped_token"
         assert result is not client  # Should be a new client
@@ -835,8 +860,8 @@ class TestMultiOrgAuth:
 
         client = GHClient(token="default-token", dry_run=False,
                           app_id="12345", app_private_key="fake-key")
-        result1 = client.for_org("ORG")
-        result2 = client.for_org("ORG")
+        result1 = client.for_org("SLAC")
+        result2 = client.for_org("SLAC")
 
         # Should only call the API once (cached on second call)
         mock_get_install.assert_called_once()
@@ -1082,9 +1107,11 @@ class TestBuildIssueBody:
         assert "deduplication" in body
 
     def test_false_positive_guide(self):
+        """Issue body should contain response options including false-positive label."""
         items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc", "verified": True}]
         body = build_issue_body("owner/repo", items, "https://github.com/runs/1")
-        assert "False Positive" in body
+        assert "trufflehog:false-positive" in body
+        assert "Response Options" in body
 
     def test_redacted_preview(self):
         items = [{"detector": "AWS", "file": "a.py", "line": 1, "commit": "abc",
@@ -1134,10 +1161,10 @@ class TestBuildIssueBody:
         """Items with original_repo='_filesystem_' should use the issue repo for links."""
         items = [{"detector": "AWS", "file": "/repo/secrets.txt", "line": 3, "commit": None,
                   "verified": False, "original_repo": "_filesystem_"}]
-        body = build_issue_body("test-org/test-repo", items, "https://github.com/runs/1")
+        body = build_issue_body("slac-it/trufflehog", items, "https://github.com/runs/1")
         assert "_filesystem_" not in body
-        assert "test-org/test-repo" in body
-        assert "[Blame](https://github.com/test-org/test-repo/blame/HEAD/secrets.txt#L3)" in body
+        assert "slac-it/trufflehog" in body
+        assert "[Blame](https://github.com/slac-it/trufflehog/blame/HEAD/secrets.txt#L3)" in body
 
 
 class TestWriteMarkdownSummary:
@@ -1291,14 +1318,14 @@ class TestWriteMarkdownSummary:
         summary_file.close()
         try:
             with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
-                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="test-org/test-repo")
+                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="slac-it/trufflehog")
             with open(summary_file.name) as f:
                 content = f.read()
             # All 3 findings should be counted
             assert "**3**" in content
             assert "Unverified (informational) | **3**" in content
             # The target repo should be used as the repo name
-            assert "test-org/test-repo" in content
+            assert "slac-it/trufflehog" in content
             # Detectors should appear
             assert "Postgres" in content
             assert "AWS" in content
@@ -1356,6 +1383,313 @@ class TestDetectorRemediationMap:
         for det, sev in DETECTOR_SEVERITY.items():
             assert sev in valid_severities, \
                 f"Detector '{det}' has invalid severity '{sev}'"
+
+
+# ---- Suppression labels and feedback loop tests ----
+
+class TestSuppressionConstants:
+    """Verify suppression label constants are well-formed."""
+
+    def test_suppression_labels_have_required_keys(self):
+        for label_name, props in SUPPRESSION_LABELS.items():
+            assert "color" in props, f"{label_name} missing 'color'"
+            assert "description" in props, f"{label_name} missing 'description'"
+            assert isinstance(props["color"], str) and len(props["color"]) == 6, \
+                f"{label_name} color should be 6-char hex"
+
+    def test_suppression_label_names_match(self):
+        assert SUPPRESSION_LABEL_NAMES == set(SUPPRESSION_LABELS.keys())
+
+    def test_comment_commands_map_to_valid_labels(self):
+        for cmd, label in COMMENT_COMMANDS.items():
+            assert cmd.startswith("/trufflehog "), f"Command '{cmd}' should start with '/trufflehog '"
+            assert label in SUPPRESSION_LABELS, f"Command '{cmd}' maps to unknown label '{label}'"
+
+    def test_expected_suppression_labels_exist(self):
+        expected = {"trufflehog:false-positive", "trufflehog:accepted-risk",
+                    "trufflehog:wont-fix", "trufflehog:remediated"}
+        assert expected == SUPPRESSION_LABEL_NAMES
+
+
+class TestGetSuppressedHashes:
+    """Tests for GHClient.get_suppressed_hashes()."""
+
+    @mock.patch.object(GHClient, 'call')
+    def test_returns_empty_when_no_suppressed_issues(self, mock_call):
+        """No issues with suppression labels → empty set."""
+        mock_call.return_value = []
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.get_suppressed_hashes("owner/repo")
+        assert result == set()
+
+    @mock.patch.object(GHClient, 'call')
+    def test_extracts_hash_from_suppressed_issue(self, mock_call):
+        """Issue with false-positive label → hash extracted from title."""
+        mock_call.return_value = [
+            {"title": "[TruffleHog] Secrets scan report (ab12cd34)", "state": "open",
+             "labels": [{"name": "trufflehog:false-positive"}]},
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.get_suppressed_hashes("owner/repo")
+        assert "ab12cd34" in result
+
+    @mock.patch.object(GHClient, 'call')
+    def test_ignores_non_trufflehog_issues(self, mock_call):
+        """Issues without [TruffleHog] in title should be ignored."""
+        mock_call.return_value = [
+            {"title": "Some other issue (ab12cd34)", "state": "open"},
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.get_suppressed_hashes("owner/repo")
+        assert result == set()
+
+    @mock.patch.object(GHClient, 'call')
+    def test_extracts_multiple_hashes(self, mock_call):
+        """Multiple suppressed issues → multiple hashes."""
+        mock_call.return_value = [
+            {"title": "[TruffleHog] Secrets scan report (aaaa1111)", "state": "open"},
+            {"title": "[TruffleHog] Secrets scan report (bbbb2222)", "state": "closed"},
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.get_suppressed_hashes("owner/repo")
+        assert "aaaa1111" in result
+        assert "bbbb2222" in result
+
+    @mock.patch.object(GHClient, 'call')
+    def test_handles_api_error_gracefully(self, mock_call):
+        """HTTP error during label search → returns empty set, no crash."""
+        mock_call.side_effect = HTTPError(
+            "https://api.github.com", 403, "Forbidden", {}, None
+        )
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.get_suppressed_hashes("owner/repo")
+        assert result == set()
+
+    @mock.patch.object(GHClient, 'call')
+    def test_ignores_invalid_hash_format(self, mock_call):
+        """Titles without valid 8-char hex hash are skipped."""
+        mock_call.return_value = [
+            {"title": "[TruffleHog] Secrets scan report (not-a-hash)", "state": "open"},
+            {"title": "[TruffleHog] Secrets scan report", "state": "open"},
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.get_suppressed_hashes("owner/repo")
+        assert result == set()
+
+
+class TestProcessCommentCommands:
+    """Tests for GHClient.process_comment_commands()."""
+
+    def test_dry_run_skips_processing(self):
+        """Dry run mode should not process any comments."""
+        client = GHClient(token="fake-token", dry_run=True)
+        result = client.process_comment_commands("owner/repo")
+        assert result == 0
+
+    @mock.patch.object(GHClient, 'call')
+    def test_applies_label_from_comment_command(self, mock_call):
+        """Comment with /trufflehog false-positive → label applied."""
+        # First call: list issues, Second: list comments, Third: apply label
+        mock_call.side_effect = [
+            # List issues (page 1)
+            [{"title": "[TruffleHog] Secrets scan report (ab12cd34)",
+              "number": 42, "labels": [], "state": "open"}],
+            # List comments for issue 42
+            [{"body": "/trufflehog false-positive", "user": {"login": "testuser"}}],
+            # Apply label response
+            [{"name": "trufflehog:false-positive"}],
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.process_comment_commands("owner/repo")
+        assert result == 1
+        # Verify POST call to add label
+        label_call = mock_call.call_args_list[2]
+        assert "labels" in str(label_call)
+
+    @mock.patch.object(GHClient, 'call')
+    def test_skips_already_labeled_issues(self, mock_call):
+        """Issue already has the suppression label → no action."""
+        mock_call.side_effect = [
+            # List issues (page 1)
+            [{"title": "[TruffleHog] Secrets scan report (ab12cd34)",
+              "number": 42, "labels": [{"name": "trufflehog:false-positive"}], "state": "open"}],
+            # List comments for issue 42
+            [{"body": "/trufflehog false-positive", "user": {"login": "testuser"}}],
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.process_comment_commands("owner/repo")
+        assert result == 0  # No labels applied (already exists)
+
+    @mock.patch.object(GHClient, 'call')
+    def test_ignores_non_trufflehog_issues(self, mock_call):
+        """Issues without [TruffleHog] prefix are skipped."""
+        mock_call.return_value = [
+            {"title": "Some other issue", "number": 1, "labels": [], "state": "open"},
+        ]
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.process_comment_commands("owner/repo")
+        assert result == 0
+
+    @mock.patch.object(GHClient, 'call')
+    def test_handles_no_open_issues(self, mock_call):
+        """No open issues → nothing to process."""
+        mock_call.return_value = []
+        client = GHClient(token="fake-token", dry_run=False)
+        result = client.process_comment_commands("owner/repo")
+        assert result == 0
+
+
+class TestCreateSuppressionLabels:
+    """Tests for GHClient.create_suppression_labels()."""
+
+    @mock.patch.object(GHClient, 'call')
+    def test_creates_all_suppression_labels(self, mock_call):
+        """Should attempt to create all suppression labels."""
+        mock_call.return_value = {"name": "test"}
+        client = GHClient(token="fake-token", dry_run=False)
+        client.create_suppression_labels("owner/repo")
+        assert mock_call.call_count == len(SUPPRESSION_LABELS)
+
+    @mock.patch.object(GHClient, 'call')
+    def test_handles_existing_labels_gracefully(self, mock_call):
+        """422 response (label exists) should not raise."""
+        mock_call.side_effect = HTTPError(
+            "https://api.github.com", 422, "Unprocessable", {}, None
+        )
+        client = GHClient(token="fake-token", dry_run=False)
+        # Should not raise
+        client.create_suppression_labels("owner/repo")
+
+    @mock.patch.object(GHClient, 'call')
+    def test_label_payloads_include_color_and_description(self, mock_call):
+        """Each label creation should include color and description."""
+        mock_call.return_value = {"name": "test"}
+        client = GHClient(token="fake-token", dry_run=False)
+        client.create_suppression_labels("owner/repo")
+        for call_args in mock_call.call_args_list:
+            payload = call_args[0][2]  # Third positional arg is the body
+            assert "color" in payload
+            assert "description" in payload
+            assert "name" in payload
+
+
+class TestProcessRepoSuppression:
+    """Tests for suppression label integration in process_repo."""
+
+    @mock.patch.object(GHClient, 'for_org')
+    @mock.patch.object(GHClient, 'repo_meta')
+    @mock.patch.object(GHClient, 'get_suppressed_hashes')
+    @mock.patch.object(GHClient, 'process_comment_commands')
+    def test_suppressed_hash_skips_issue_creation(self, mock_comments, mock_suppressed,
+                                                    mock_meta, mock_for_org):
+        """If the findings hash is in the suppressed set, issue creation is skipped."""
+        from trufflehog_scanner import process_repo, compute_findings_hash
+
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
+        expected_hash = compute_findings_hash(items)
+
+        mock_meta.return_value = {"archived": False, "disabled": False}
+        mock_suppressed.return_value = {expected_hash}  # This hash is suppressed
+        mock_comments.return_value = 0
+
+        client = GHClient(token="fake-token", dry_run=False)
+        mock_for_org.return_value = client
+
+        repo, created = process_repo(
+            repo="owner/repo",
+            items=items,
+            gh=client,
+            title_prefix="[TruffleHog]",
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            extra_labels=[],
+            dry_run=False
+        )
+
+        assert repo == "owner/repo"
+        assert created is False  # Issue should NOT be created
+
+    @mock.patch.object(GHClient, 'for_org')
+    @mock.patch.object(GHClient, 'repo_meta')
+    @mock.patch.object(GHClient, 'search_issue_by_title')
+    @mock.patch.object(GHClient, 'search_recent_issues_with_hash')
+    @mock.patch.object(GHClient, 'create_issue')
+    @mock.patch.object(GHClient, 'create_labels_if_needed')
+    @mock.patch.object(GHClient, 'get_suppressed_hashes')
+    @mock.patch.object(GHClient, 'process_comment_commands')
+    @mock.patch.object(GHClient, 'create_suppression_labels')
+    def test_non_suppressed_hash_allows_issue_creation(self, mock_supp_labels, mock_comments, mock_suppressed,
+                                                         mock_labels, mock_create, mock_hash_search,
+                                                         mock_title_search, mock_meta, mock_for_org):
+        """If the findings hash is NOT suppressed, issue creation proceeds normally."""
+        from trufflehog_scanner import process_repo
+
+        mock_meta.return_value = {"archived": False, "disabled": False}
+        mock_suppressed.return_value = {"different_hash"}  # Different hash suppressed
+        mock_comments.return_value = 0
+        mock_title_search.return_value = False
+        mock_hash_search.return_value = False
+        mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/1", "number": 1}
+        mock_labels.return_value = None
+        mock_supp_labels.return_value = None
+
+        client = GHClient(token="fake-token", dry_run=False)
+        mock_for_org.return_value = client
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123"}]
+
+        repo, created = process_repo(
+            repo="owner/repo",
+            items=items,
+            gh=client,
+            title_prefix="[TruffleHog]",
+            run_url="https://github.com/owner/repo/actions/runs/123",
+            extra_labels=[],
+            dry_run=False
+        )
+
+        assert repo == "owner/repo"
+        assert created is True
+
+
+class TestBuildIssueBodyResponseOptions:
+    """Tests for the Response Options section in build_issue_body."""
+
+    def test_issue_body_contains_response_options_section(self):
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://run.url", findings_hash="ab12cd34")
+        assert "Response Options" in body
+
+    def test_issue_body_contains_suppression_labels(self):
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://run.url", findings_hash="ab12cd34")
+        assert "trufflehog:false-positive" in body
+        assert "trufflehog:accepted-risk" in body
+        assert "trufflehog:wont-fix" in body
+        assert "trufflehog:remediated" in body
+
+    def test_issue_body_contains_comment_commands(self):
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://run.url", findings_hash="ab12cd34")
+        assert "/trufflehog false-positive" in body
+        assert "/trufflehog accepted-risk" in body
+        assert "/trufflehog wont-fix" in body
+        assert "/trufflehog remediated" in body
+
+    def test_issue_body_contains_manual_suppression(self):
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://run.url", findings_hash="ab12cd34")
+        assert "false_positives.txt" in body
+        assert "Manual Suppression" in body
+
+    def test_issue_body_still_contains_remediation(self):
+        """The Response Options section should coexist with remediation guidance."""
+        items = [{"detector": "AWS", "file": "config.py", "line": 10, "commit": "abc123", "verified": True}]
+        body = build_issue_body("owner/repo", items, "https://run.url", findings_hash="ab12cd34")
+        assert "Remediation Steps" in body
+        assert "Rotate/Revoke" in body
+        assert "Additional Resources" in body
+
+
+from urllib.error import HTTPError
 
 
 if __name__ == "__main__":
