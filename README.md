@@ -83,15 +83,18 @@ flowchart TD
     Summarize --> WS[4. workflow-summary<br/>Config table · Metrics · Links]
     WS --> End([Complete])
 
-    style Start fill:#2e7d32,stroke:#1b5e20,color:#fff
-    style End fill:#2e7d32,stroke:#1b5e20,color:#fff
-    style Plan fill:#1976d2,stroke:#0d47a1,color:#fff
-    style S1 fill:#7b1fa2,stroke:#4a148c,color:#fff
-    style S2 fill:#7b1fa2,stroke:#4a148c,color:#fff
-    style SN fill:#7b1fa2,stroke:#4a148c,color:#fff
-    style Summarize fill:#c2185b,stroke:#880e4f,color:#fff
-    style WS fill:#0097a7,stroke:#006064,color:#fff
-    style Feedback fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5
+    style Start fill:#1b5e20,stroke:#1b5e20,color:#fff
+    style End fill:#1b5e20,stroke:#1b5e20,color:#fff
+    style Plan fill:#0d47a1,stroke:#0d47a1,color:#fff
+    style S1 fill:#4a148c,stroke:#4a148c,color:#fff
+    style S2 fill:#4a148c,stroke:#4a148c,color:#fff
+    style SN fill:#4a148c,stroke:#4a148c,color:#fff
+    style Summarize fill:#880e4f,stroke:#880e4f,color:#fff
+    style WS fill:#006064,stroke:#006064,color:#fff
+    style Feedback fill:#fafafa,stroke:#616161,stroke-dasharray: 5 5
+    style Labels fill:#455a64,stroke:#455a64,color:#fff
+    style Comments fill:#455a64,stroke:#455a64,color:#fff
+    style IFW fill:#455a64,stroke:#455a64,color:#fff
 ```
 
 **Sharding**: Repos are distributed across parallel shards (default: modulo distribution). Each shard scans its repos concurrently, then uploads NDJSON artifacts. The summarize job merges results, deduplicates, and optionally creates issues.
@@ -275,9 +278,15 @@ flowchart TD
     Suppressed -->|Yes| Skip([<b>SKIP ISSUE CREATION</b>])
     Suppressed -->|No| Create([Create/Update Issue])
 
-    style Scan fill:#e1f5fe,stroke:#01579b
-    style Skip fill:#ffebee,stroke:#c62828,stroke-width:2px
-    style Suppressed fill:#fff3e0,stroke:#ef6c00
+    style Scan fill:#0d47a1,stroke:#0d47a1,color:#fff
+    style Issue fill:#4a148c,stroke:#4a148c,color:#fff
+    style Review fill:#1b5e20,stroke:#1b5e20,color:#fff
+    style Label fill:#37474f,stroke:#37474f,color:#fff
+    style Comment fill:#37474f,stroke:#37474f,color:#fff
+    style NextScan fill:#006064,stroke:#006064,color:#fff
+    style Suppressed fill:#e65100,stroke:#e65100,color:#fff
+    style Skip fill:#b71c1c,stroke:#b71c1c,color:#fff,stroke-width:2px
+    style Create fill:#2e7d32,stroke:#2e7d32,color:#fff
 ```
 
 ### Three-Tier Suppression
