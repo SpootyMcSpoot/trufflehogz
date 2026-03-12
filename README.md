@@ -91,10 +91,11 @@ flowchart TD
     style SN fill:#4a148c,stroke:#4a148c,color:#fff
     style Summarize fill:#880e4f,stroke:#880e4f,color:#fff
     style WS fill:#006064,stroke:#006064,color:#fff
-    style Feedback fill:#fafafa,stroke:#616161,stroke-dasharray: 5 5
-    style Labels fill:#455a64,stroke:#455a64,color:#fff
-    style Comments fill:#455a64,stroke:#455a64,color:#fff
-    style IFW fill:#455a64,stroke:#455a64,color:#fff
+    style Feedback fill:#212121,stroke:#e65100,stroke-dasharray: 5 5,color:#fff
+    style Labels fill:#e65100,stroke:#e65100,color:#fff
+    style Comments fill:#e65100,stroke:#e65100,color:#fff
+    style IFW fill:#e65100,stroke:#e65100,color:#fff
+    linkStyle 9 stroke:#e65100,stroke-width:2px;
 ```
 
 **Sharding**: Repos are distributed across parallel shards (default: modulo distribution). Each shard scans its repos concurrently, then uploads NDJSON artifacts. The summarize job merges results, deduplicates, and optionally creates issues.
