@@ -67,9 +67,19 @@ flowchart TD
     Plan --> S1[2a. scan shard 1]
     Plan --> S2[2b. scan shard 2]
     Plan --> SN[2c. scan shard N]
-    S1 --> Summarize[3. summarize-org<br/>Merge NDJSON · Filter FPs<br/>Generate summary · Create issues]
+    
+    subgraph Feedback["Feedback Loop (Active)"]
+        Labels[Issue Labels]
+        Comments[Comment Commands]
+        IFW[issue-feedback.yml]
+        Comments --> IFW --> Labels
+    end
+
+    S1 --> Summarize[3. summarize-org<br/>Merge NDJSON · Filter FPs<br/>Check Suppressed Hashes<br/>Generate summary · Create issues]
     S2 --> Summarize
     SN --> Summarize
+    Labels -.->|Suppression Check| Summarize
+    
     Summarize --> WS[4. workflow-summary<br/>Config table · Metrics · Links]
     WS --> End([Complete])
 
@@ -81,6 +91,7 @@ flowchart TD
     style SN fill:#7b1fa2,stroke:#4a148c,color:#fff
     style Summarize fill:#c2185b,stroke:#880e4f,color:#fff
     style WS fill:#0097a7,stroke:#006064,color:#fff
+    style Feedback fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5
 ```
 
 **Sharding**: Repos are distributed across parallel shards (default: modulo distribution). Each shard scans its repos concurrently, then uploads NDJSON artifacts. The summarize job merges results, deduplicates, and optionally creates issues.
