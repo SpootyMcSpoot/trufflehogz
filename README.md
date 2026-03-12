@@ -260,22 +260,24 @@ The scanner processes these commands on the next scan run and automatically appl
 
 ### Suppression Flow
 
-```
-Scan finds secret  →  Creates issue with hash (ab12cd34)
-                          │
-                     Team reviews
-                          │
-               ┌─────────┼───────────┐
-               │                       │
-        Adds label:              Comments:
-   trufflehog:false-positive   /trufflehog false-positive
-               │                       │
-               └───────┼───────────┘
-                       │
-              Next scan runs
-                       │
-           Hash ab12cd34 is in
-          suppressed set → SKIP
+```mermaid
+flowchart TD
+    Scan([Scan finds secret]) --> Issue[Creates issue with hash <b>ab12cd34</b>]
+    Issue --> Review[Team reviews]
+    
+    Review --> Label[Adds label:<br/><code>trufflehog:false-positive</code>]
+    Review --> Comment[Comments:<br/><code>/trufflehog false-positive</code>]
+    
+    Label --> NextScan[Next scan runs]
+    Comment --> NextScan
+    
+    NextScan --> Suppressed{Hash <b>ab12cd34</b> is in<br/>suppressed set?}
+    Suppressed -->|Yes| Skip([<b>SKIP ISSUE CREATION</b>])
+    Suppressed -->|No| Create([Create/Update Issue])
+
+    style Scan fill:#e1f5fe,stroke:#01579b
+    style Skip fill:#ffebee,stroke:#c62828,stroke-width:2px
+    style Suppressed fill:#fff3e0,stroke:#ef6c00
 ```
 
 ### Three-Tier Suppression
