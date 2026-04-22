@@ -43,6 +43,9 @@ jobs:
   plan:
     name: Plan Self-Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       repo_name: ${{ steps.set-repo.outputs.repo_name }}
       shard_count: ${{ steps.set-repo.outputs.shard_count }}
@@ -57,6 +60,9 @@ jobs:
   scan:
     name: Scan [shard 1/1]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     needs: [plan]
     env:
       REPO_NAME: ${{ needs.plan.outputs.repo_name }}
@@ -74,7 +80,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prime/restore TruffleHog image cache
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ${{ env.TRUFFLEHOG_CACHE_FILE }}
           key: trufflehog-image-${{ env.TRUFFLEHOG_VERSION }}
@@ -117,7 +123,7 @@ jobs:
 
           # Count findings
           FINDING_COUNT=$(wc -l < tmp-findings/self.ndjson | tr -d ' ')
-          echo "finding_count=$FINDING_COUNT" >> $GITHUB_OUTPUT
+          echo "finding_count=$FINDING_COUNT" >> "$GITHUB_OUTPUT"
 
           # Copy to expected artifact names
           cp tmp-findings/self.ndjson findings-self.ndjson
@@ -136,7 +142,7 @@ jobs:
           cat diag/SCAN_SUMMARY.txt
 
       - name: Upload scan artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trufflehog-findings-self-shard-1-of-1
           path: |
@@ -146,7 +152,7 @@ jobs:
           compression-level: 6
 
       - name: Upload troubleshoot bundle
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trufflehog-troubleshoot-self-shard-1-of-1
           path: |
@@ -157,6 +163,10 @@ jobs:
   summarize:
     name: Summarize Findings
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
     needs: [plan, scan]
     env:
       REPO_NAME: ${{ needs.plan.outputs.repo_name }}
@@ -178,7 +188,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Download scan artifacts
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3  # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: trufflehog-findings-self-shard-*
           path: merge/self
@@ -199,7 +209,7 @@ jobs:
           fi
 
           TOTAL=$(wc -l < findings-self-ALL.ndjson | tr -d ' ')
-          echo "total_findings=$TOTAL" >> $GITHUB_OUTPUT
+          echo "total_findings=$TOTAL" >> "$GITHUB_OUTPUT"
 
           echo "=== Findings Summary ==="
           echo "Total findings: $TOTAL"
@@ -262,6 +272,55 @@ jobs:
           echo "Running trufflehog_scanner.py with --include-unverified..."
           python3 trufflehog_scanner.py "${SCANNER_ARGS[@]}"
 
+      - name: Verify issue was actually created in GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ ! -s findings-self-ALL.ndjson ]; then
+            echo "No findings -- skipping issue verification"
+            exit 0
+          fi
+
+          echo "=== Post-Creation Issue Verification ==="
+          echo "Checking for TruffleHog issues in ${{ github.repository }}..."
+
+          # Search for issues created by the scanner in the last 10 minutes
+          ISSUES=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label "tool:trufflehog" \
+            --state open \
+            --limit 5 \
+            --json number,title,createdAt \
+            --jq '.[].number' 2>&1) || true
+
+          if [ -z "$ISSUES" ]; then
+            echo "::error title=Issue Creation Failed::No TruffleHog issues found in ${{ github.repository }}. The scanner ran but no issue was created."
+            echo ""
+            echo "Possible causes:"
+            echo "  - GITHUB_TOKEN lacks issues:write permission"
+            echo "  - Scanner exited before reaching issue creation"
+            echo "  - All findings were filtered/suppressed"
+            echo "  - GitHub API returned success but issue was not persisted"
+            exit 1
+          fi
+
+          echo "[PASS] Found TruffleHog issue(s): $ISSUES"
+
+          # Show the most recent issue details
+          LATEST=$(echo "$ISSUES" | head -1)
+          echo ""
+          echo "=== Latest Issue (#$LATEST) ==="
+          gh issue view "$LATEST" --repo "${{ github.repository }}" --json number,title,state,labels,createdAt \
+            --jq '"  Number: #\(.number)\n  Title: \(.title)\n  State: \(.state)\n  Labels: \([.labels[].name] | join(", "))\n  Created: \(.createdAt)"'
+
+          # Clean up: close the self-scan issue to avoid clutter
+          echo ""
+          echo "Closing self-scan issue #$LATEST (test-only)..."
+          gh issue close "$LATEST" --repo "${{ github.repository }}" \
+            --comment "Automatically closed by self-scan workflow. Issue creation verified successfully." || true
+
       - name: Validate expected test secrets detected
         run: |
           EXPECTED_MIN=20
@@ -286,7 +345,7 @@ jobs:
           echo "[PASS] Detected $ACTUAL test secrets (minimum: $EXPECTED_MIN)"
 
       - name: Upload merged findings
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trufflehog-findings-self-ALL
           path: |
@@ -298,6 +357,9 @@ jobs:
   workflow-summary:
     name: Workflow Summary
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     needs: [plan, scan, summarize]
     if: always()
     env:

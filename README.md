@@ -49,7 +49,7 @@ TRUFFLEHOG_ORGS = org1,org2,org3
 
 **Actions → TruffleHog Org Scan → Run workflow**
 
-The workflow runs automatically every **Sunday at 10 AM PST** and can be triggered manually at any time.
+The workflow runs automatically every **Sunday at 4 PM PST** (Monday 00:00 UTC) and can be triggered manually at any time.
 
 ### 4. Review Results
 
@@ -129,8 +129,8 @@ scripts/
 test/
   fixtures/                   # Intentional test secrets for validation
   test-config.json            # Test configuration with sample credentials
-trufflehog_scanner.py         # Main scanner script (~1550 lines)
-test_trufflehog_scanner.py    # Unit tests (122 tests)
+trufflehog_scanner.py         # Main scanner script (~1950 lines)
+test_trufflehog_scanner.py    # Unit tests (167 tests)
 requirements.txt              # Python dependencies (PyJWT, cryptography, pytest)
 ```
 
@@ -168,6 +168,8 @@ The `trufflehog_scanner.py` script processes TruffleHog NDJSON output into actio
 | **False-positive suppression** | Regex patterns from `.github/trufflehog/false_positives.txt` |
 | **Issue feedback loop** | Label-based suppression + comment commands for false-positive/accepted-risk handling |
 | **Concurrent issue creation** | ThreadPoolExecutor with configurable worker count |
+| **Post-creation verification** | GET-back check confirms every issue actually exists after creation |
+| **Accurate summary reporting** | Summary written after issue creation, reports actual created count vs. finding count |
 | **Target repo override** | Consolidate all findings into a single repo (useful for testing) |
 | **GitHub App + PAT auth** | Automatic JWT token generation for GitHub App, PAT as fallback |
 
@@ -199,6 +201,15 @@ trufflehog_scanner.py [options]
 | `--log-level LEVEL` | Logging level | `INFO` |
 | `--validate` | Validate inputs and exit | `false` |
 
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success (no errors, or dry-run completed) |
+| `1` | Fatal error (unhandled exception, auth failure) |
+| `2` | Issue creation failures -- one or more repos failed to create issues |
+| `130` | Interrupted by user (KeyboardInterrupt) |
+
 ---
 
 ## Issue Creation
@@ -211,6 +222,10 @@ Enable with `open_issues: true` in the workflow dispatch UI, or set `DEFAULT_OPE
 **Labels**: `security`, `tool:trufflehog`, `<highest-severity>` (e.g. `sec:critical`), `needs-triage`
 
 **Deduplication**: If an issue with the same hash already exists (open or closed), no duplicate is created.
+
+**Post-creation verification**: After every `POST /repos/{repo}/issues`, the scanner performs a `GET` to confirm the issue actually exists. If verification fails, the repo is counted as a failure and the scanner exits with code 2.
+
+**Summary accuracy**: The workflow summary is written *after* issue creation completes, so the "Issues actually created" count reflects reality. When the created count is lower than the verified findings count, the summary displays a warning row showing the gap.
 
 **Issue body includes**:
 - Severity badge (🔴 CRITICAL / 🟠 HIGH / 🟡 MEDIUM / 🟢 LOW) and scan timestamp
@@ -387,11 +402,11 @@ Set in **Settings → Secrets and variables → Actions → Variables**. These o
 
 ### Cron Schedule
 
-Default: **Every Sunday at 6 PM UTC (10 AM PST)**
+Default: **Every Sunday at 4 PM PST (Monday 00:00 UTC)**
 
 ```yaml
 schedule:
-  - cron: '0 18 * * 0'
+  - cron: '0 0 * * 1'
 ```
 
 Common alternatives:
@@ -476,8 +491,8 @@ pip install -r requirements.txt
 python3 -m pytest test_trufflehog_scanner.py -v
 ```
 
-**142 tests** covering: severity classification, label generation, hash deduplication, NDJSON loading,
-issue body generation, summary output, GHClient API calls, rate limiting, multi-org authentication, and end-to-end `process_repo` flows.
+**167 tests** covering: severity classification, label generation, hash deduplication, NDJSON loading,
+issue body generation, summary output, GHClient API calls, rate limiting, multi-org authentication, post-creation verification, and end-to-end `process_repo` flows.
 
 ### Self-Scan Workflow
 
@@ -531,7 +546,8 @@ See [REMEDIATION.md](REMEDIATION.md) for the complete guide with commands.
 | **Rate limits** | Reduce `scan_parallel` to 4, lower `shard_cap`, stagger org scans |
 | **Timeouts** | Enable `adaptive_timeout`, increase `per_repo_timeout`, set `max_repo_size_kb` |
 | **401/403 errors** | Verify token scopes (`repo` + `read:org`), check expiration, confirm org membership |
-| **No issues created** | Set `open_issues: true`, verify token has Issues (Read/Write), check `TRUFFLEHOG_ISSUES_ORGS` |
+| **No issues created** | Set `open_issues: true` (and `DEFAULT_OPEN_ISSUES: true` for scheduled runs), verify token has Issues (Read/Write), check `TRUFFLEHOG_ISSUES_ORGS` |
+| **Summary says issues created but none exist** | Check `DEFAULT_OPEN_ISSUES` variable -- scheduled runs use this, not the UI input. If unset, scans run in `--dry-run` mode silently |
 | **Verify setup works** | Run `self-scan` workflow manually — validates TruffleHog + scanner end-to-end |
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed solutions and performance tuning.
@@ -610,7 +626,7 @@ This scanner directly supports or contributes to the following [NIST SP 800-53 R
 
 | Control | Name | How This Scanner Addresses It |
 |---------|------|-------------------------------|
-| **SA-11** | Developer Testing and Evaluation | 167 unit tests; self-scan workflow validates scanner on every push against intentional test fixtures (≥20 expected findings) |
+| **SA-11** | Developer Testing and Evaluation | 167 unit tests with post-creation verification coverage; self-scan workflow validates scanner on every push against intentional test fixtures (>=20 expected findings) |
 | **SA-15** | Development Process, Standards, and Tools | Supply chain protections: SHA-pinned actions, Dependabot, Semgrep SAST, security baseline checks, PR validation gates |
 
 ### Supply Chain Risk Management

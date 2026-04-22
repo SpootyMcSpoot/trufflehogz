@@ -59,6 +59,7 @@ import argparse
 import collections
 import concurrent.futures as cf
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -218,15 +219,21 @@ def get_auth_token() -> str:
 # ---------------------------- Logging ----------------------------
 
 def setup_logging(level: str = "INFO") -> None:
+    """Configure root logger with timestamp, level, thread, and function context."""
     lvl = getattr(logging, level.upper(), logging.INFO)
     fmt = "%(asctime)s %(levelname)s %(threadName)s %(funcName)s: %(message)s"
     logging.basicConfig(level=lvl, format=fmt)
 
 # ---------------------------- Label taxonomy ----------------------------
 
+# Applied to every issue by default, regardless of detector type.
 DEFAULT_LABELS = ["security", "tool:trufflehog"]
+
+# Ordered low-to-high so index position doubles as a numeric rank.
 SEVERITY_ORDER = ["sec:low", "sec:medium", "sec:high", "sec:critical"]
 
+# Maps TruffleHog detector names to GitHub issue severity labels.
+# The highest severity across all findings in a repo determines the issue's label.
 DETECTOR_SEVERITY = {
     "AWS": "sec:critical",
     "GCP": "sec:critical",
@@ -247,6 +254,9 @@ DETECTOR_SEVERITY = {
     "Generic": "sec:medium",
 }
 
+# Maps detector names to type labels (e.g. "secret:aws").
+# These are informational -- not currently applied to issues to avoid label clutter,
+# but used by normalize_detector() for consistent naming across the codebase.
 DETECTOR_TYPES = {
     "AWS": "secret:aws",
     "GCP": "secret:gcp",
@@ -551,6 +561,12 @@ def load_exclude_regexes(path: Optional[str]) -> List[re.Pattern]:
     return regs
 
 def compose_match_string(o: Dict[str, Any]) -> str:
+    """Build a pipe-delimited string from a finding for regex matching.
+    
+    This is what false-positive regexes are matched against. Each field is
+    prefixed so patterns can target specific attributes, e.g.:
+      detector=AWS | verified=True | repo=org/repo | file=path/to.py | redacted=AKIA...
+    """
     det = o.get("DetectorName") or o.get("DetectorType") or "Unknown"
     repo = find_repo(o) or ""
     repo = sanitize_repo(repo)
@@ -567,6 +583,7 @@ def compose_match_string(o: Dict[str, Any]) -> str:
     return " | ".join(parts)
 
 def is_excluded(o: Dict[str, Any], regexes: List[re.Pattern]) -> bool:
+    """Check if a finding matches any false-positive regex pattern."""
     if not regexes:
         return False
     s = compose_match_string(o)
@@ -578,6 +595,15 @@ def is_excluded(o: Dict[str, Any], regexes: List[re.Pattern]) -> bool:
 # ---------------------------- GitHub API ----------------------------
 
 class GHClient:
+    """GitHub API client with rate limiting, retries, and multi-org App auth.
+    
+    Wraps urllib to call the GitHub REST API. Supports both PAT and GitHub App
+    authentication. For App auth, tokens are org-scoped: call for_org() to get
+    a client with the correct installation token for a given org.
+    
+    All mutating calls (POST/PATCH/PUT/DELETE) are skipped in dry_run mode.
+    GET calls always execute (needed for dedup checks even in dry-run).
+    """
     def __init__(self, token: str, dry_run: bool = False,
                  app_id: str = "", app_private_key: str = ""):
         self.token = token
@@ -585,7 +611,7 @@ class GHClient:
         self.dry_run = dry_run
         self._app_id = app_id
         self._app_private_key = app_private_key
-        self._org_token_cache: Dict[str, str] = {}  # org -> installation access token
+        self._org_token_cache: Dict[str, str] = {}  # org -> installation access token (GIL-safe for simple dict ops; worst case is a duplicate token mint)
 
     def _get_installation_for_org(self, org: str) -> int:
         """Look up the GitHub App installation ID for a given org via the App JWT."""
@@ -634,6 +660,11 @@ class GHClient:
             return self
 
     def _req(self, method: str, path: str, payload: Optional[dict], attempt: int) -> dict:
+        """Execute a single HTTP request against the GitHub API.
+        
+        Waits on the global rate limiter before each call. Returns parsed JSON.
+        Raises HTTPError or URLError on failure (caller handles retries).
+        """
         GLOBAL_LIMITER.wait()
         url = f"{self.api_base}{path}"
         data = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -658,6 +689,12 @@ class GHClient:
 
     def call(self, method: str, path: str, payload: Optional[dict] = None,
              max_retries: int = DEFAULT_MAX_RETRIES, backoff_base: float = DEFAULT_BACKOFF_BASE) -> dict:
+        """Call the GitHub API with automatic retries and exponential backoff.
+        
+        Certain HTTP status codes (400, 401, 404, 422) are not retried because
+        they indicate permanent errors (bad request, auth failure, not found,
+        validation error). All other errors are retried up to max_retries times.
+        """
         if self.dry_run and method.upper() in ("POST", "PATCH", "PUT", "DELETE"):
             logging.info("DRY RUN: %s %s payload=%s", method, path, payload)
             return {}
@@ -856,6 +893,21 @@ class GHClient:
         except HTTPError as e:
             logging.error("Failed to create issue in %s: HTTP %d - %s", repo, e.code, e.reason)
             raise
+
+    def verify_issue_exists(self, repo: str, issue_number: int) -> bool:
+        """Verify that a created issue actually exists by fetching it back."""
+        if self.dry_run or issue_number <= 0:
+            return self.dry_run
+        try:
+            data = self.call("GET", f"/repos/{repo}/issues/{issue_number}", None)
+            if isinstance(data, dict) and data.get("number") == issue_number:
+                logging.info("Verified issue #%d exists in %s (state=%s)", issue_number, repo, data.get("state", "?"))
+                return True
+            logging.warning("Verification failed for issue #%d in %s: unexpected response", issue_number, repo)
+            return False
+        except HTTPError as e:
+            logging.error("Verification failed for issue #%d in %s: HTTP %d", issue_number, repo, e.code)
+            return False
 
     def create_suppression_labels(self, repo: str) -> None:
         """Create the suppression labels (with colors and descriptions) in the target repo.
@@ -1142,7 +1194,10 @@ def write_markdown_summary(ndjson_path: str,
                            detailed_per_repo: int = 10,
                            detailed_max_total: int = 300,
                            errors_path: Optional[str] = None,
-                           target_repo: Optional[str] = None) -> None:
+                           target_repo: Optional[str] = None,
+                           created_count: Optional[int] = None,
+                           skipped_count: Optional[int] = None,
+                           failed_repos: Optional[List[str]] = None) -> None:
     """
     Build a verified-only summary with strict de-duplication:
     uniqueness key = (repo, detector, file, line, commit).
@@ -1244,11 +1299,25 @@ def write_markdown_summary(ndjson_path: str,
 
     # ---- Build summary markdown ----
     grand_total = ver_total + unver_total
+    ver_repo_count = len(ver_repo)  # repos with at least one verified finding
     content_lines: List[str] = []
     content_lines.append(f"## TruffleHog summary for `{org}`\n")
     content_lines.append(f"| Metric | Count |\n|---|---:|\n")
     content_lines.append(f"| Total unique findings | **{grand_total}** |\n")
-    content_lines.append(f"| Verified (issues created) | **{ver_total}** |\n")
+    if created_count is not None:
+        content_lines.append(f"| Verified findings | **{ver_total}** |\n")
+        content_lines.append(f"| Repos with verified findings | **{ver_repo_count}** |\n")
+        content_lines.append(f"| Issues created | **{created_count}** |\n")
+        if skipped_count:
+            content_lines.append(f"| :white_check_mark: Skipped (pre-existing issue) | **{skipped_count}** |\n")
+        if failed_repos:
+            content_lines.append(f"| :x: Repos with issue creation failures | **{len(failed_repos)}** |\n")
+        # Gap check: warn only when repos are unaccounted for (created + skipped + failed < repos with findings)
+        accounted = created_count + (skipped_count or 0) + len(failed_repos or [])
+        if ver_repo_count > accounted:
+            content_lines.append(f"| :warning: Repos unaccounted for | **{ver_repo_count - accounted}** |\n")
+    else:
+        content_lines.append(f"| Verified findings (issues pending) | **{ver_total}** |\n")
     content_lines.append(f"| Unverified (informational) | **{unver_total}** |\n")
     if total_excluded > 0:
         content_lines.append(f"| Filtered as false-positive | **{total_excluded}** |\n")
@@ -1395,14 +1464,14 @@ def write_markdown_summary(ndjson_path: str,
 # ---------------------------- Issue creation ----------------------------
 
 def compute_findings_hash(items: List[Dict[str, Any]]) -> str:
+    """Deterministic 8-char hex hash of a set of findings.
+    
+    The hash is derived from a sorted, canonical representation of all
+    finding keys (repo, detector, file, line, commit). This means:
+    - Same findings in different order produce the same hash.
+    - Adding or removing a finding changes the hash.
+    - The hash appears in the issue title for deduplication.
     """
-    Compute a deterministic hash from findings to uniquely identify this set of secrets.
-
-    Uses file paths, line numbers, and commits to create a stable identifier.
-    Same findings = same hash, allowing duplicate detection even across days.
-    """
-    import hashlib
-
     # Create a stable, sorted representation of all findings
     stable_items = []
     for item in items:
@@ -1425,6 +1494,11 @@ def compute_findings_hash(items: List[Dict[str, Any]]) -> str:
     return hasher.hexdigest()[:8]
 
 def repo_is_actionable(meta: Optional[dict]) -> bool:
+    """Return True if the repo is accessible and not archived/disabled.
+    
+    We skip repos that can't receive issues -- archived repos reject
+    issue creation with 422, and disabled repos are inaccessible.
+    """
     if not meta:
         return False
     if meta.get("archived"):
@@ -1626,7 +1700,22 @@ def process_repo(repo: str,
                  extra_labels: Optional[List[str]],
                  dry_run: bool,
                  scanner_repo: str = "",
-                 force_create: bool = False) -> Tuple[str, bool]:
+                 force_create: bool = False) -> Tuple[str, Optional[bool]]:
+    """Process findings for a single repo: dedup check, label setup, issue creation.
+    
+    This is the per-repo worker function called from a ThreadPoolExecutor.
+    It performs the full lifecycle:
+    1. Get an org-scoped token (GitHub App only)
+    2. Verify the repo is accessible and not archived
+    3. Process any pending /trufflehog comment commands on existing issues
+    4. Compute a deterministic hash of the findings for deduplication
+    5. Check suppression labels and existing issues (skippable with force_create)
+    6. Create labels, then the issue itself
+    7. Verify the issue actually exists via GET-back check
+    
+    Returns: (repo_name, result) where result is True (created), False (failed),
+             or None (skipped/deduped -- not an error)
+    """
     # Get an org-scoped token for the target repo's org (no-op for PAT auth)
     org = repo.split("/")[0] if "/" in repo else ""
     if org:
@@ -1634,7 +1723,7 @@ def process_repo(repo: str,
     logging.info("Processing repo %s with %d finding(s)", repo, len(items))
     meta = gh.repo_meta(repo)
     if not repo_is_actionable(meta):
-        return (repo, False)
+        return (repo, None)
 
     # Process any /trufflehog comment commands on existing issues (applies labels)
     try:
@@ -1653,19 +1742,19 @@ def process_repo(repo: str,
         if findings_hash in suppressed_hashes:
             logging.info("Finding hash %s is suppressed in %s (labeled false-positive/accepted-risk/wont-fix)",
                          findings_hash, repo)
-            return (repo, False)
+            return (repo, None)
 
         # Primary: exact title match (hash-based, date-free) — 1-2 API calls
         if gh.search_issue_by_title(repo, title):
             logging.info("Issue already exists for %s with same findings (hash=%s)", repo, findings_hash)
-            return (repo, False)
+            return (repo, None)
 
         # Secondary: search for issues with same hash within 90 days (2 pages max)
         title_pattern = f"{title_prefix} Secrets scan report"
         hash_pattern = f"({findings_hash})"
         if gh.search_recent_issues_with_hash(repo, title_pattern, hash_pattern, days=90):
             logging.info("Issue already exists in %s with same findings (hash=%s), skipping", repo, findings_hash)
-            return (repo, False)
+            return (repo, None)
     else:
         logging.info("Force-create enabled, skipping deduplication checks")
 
@@ -1685,8 +1774,20 @@ def process_repo(repo: str,
     try:
         created = gh.create_issue(repo, title, body, auto) or {}
         issue_number = created.get("number")
-        logging.info("Created issue in %s number=%s", repo, issue_number)
-        return (repo, True)
+        if issue_number and isinstance(issue_number, int) and issue_number > 0:
+            # Post-creation verification: confirm the issue actually exists
+            if gh.verify_issue_exists(repo, issue_number):
+                logging.info("Created and verified issue in %s number=%s", repo, issue_number)
+                return (repo, True)
+            else:
+                logging.error("Issue #%d was reportedly created in %s but verification FAILED", issue_number, repo)
+                return (repo, False)
+        elif gh.dry_run:
+            logging.info("DRY RUN: would create issue in %s", repo)
+            return (repo, True)
+        else:
+            logging.error("Issue creation in %s returned no valid issue number: %s", repo, created)
+            return (repo, False)
     except HTTPError as e:
         logging.warning("Failed to create issue in %s: HTTP %d", repo, e.code)
         return (repo, False)
@@ -1759,6 +1860,18 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 def main() -> int:
+    """Entry point: parse args, load findings, create issues, write summary.
+    
+    Execution flow:
+    1. Load false-positive regex patterns
+    2. Run optional diagnostics (--diag-dir) and preview (--print-sanitized)
+    3. If --validate: print stats and exit
+    4. Authenticate (GitHub App > PAT > GITHUB_TOKEN)
+    5. Load verified findings from NDJSON, grouped by repo
+    6. Dispatch process_repo() via ThreadPoolExecutor (one thread per repo)
+    7. Write summary to GITHUB_STEP_SUMMARY with actual created/failed counts
+    8. Exit 0 on success, 2 if any issue creation failed
+    """
     args = parse_args()
     setup_logging(args.log_level)
 
@@ -1794,27 +1907,25 @@ def main() -> int:
         logging.info("[%s] diagnostics-only run; no merged NDJSON to process", args.org)
         return 0
 
-    # Optional summary (still read-only)
-    if os.path.exists(args.ndjson) and args.write_summary:
-        try:
-            write_markdown_summary(
-                args.ndjson,
-                args.org,
-                exclude_regexes,
-                include_detailed=args.summary_detailed,
-                detailed_per_repo=max(1, args.summary_detailed_per_repo),
-                detailed_max_total=max(1, args.summary_detailed_max),
-                errors_path=args.errors_ndjson,
-                target_repo=args.target_repo
-            )
-        except Exception as e:
-            logging.warning("Summary generation failed: %s", e)
+    # Summary is written AFTER issue creation so it can report actual
+    # created_count.  Early-exit paths (no auth, no findings) write
+    # their own summary before returning.
 
     try:
         token = get_auth_token()
     except ValueError as e:
         logging.info("Skipping issue creation: %s", e)
-        return 0 if os.path.exists(args.ndjson) else 0
+        # Still write summary (without issue counts) when auth is unavailable
+        if os.path.exists(args.ndjson) and args.write_summary:
+            try:
+                write_markdown_summary(args.ndjson, args.org, exclude_regexes,
+                    include_detailed=args.summary_detailed,
+                    detailed_per_repo=max(1, args.summary_detailed_per_repo),
+                    detailed_max_total=max(1, args.summary_detailed_max),
+                    errors_path=args.errors_ndjson, target_repo=args.target_repo)
+            except Exception as se:
+                logging.warning("Summary generation failed: %s", se)
+        return 0
 
     # Allow findings without repo metadata when --target-repo is specified (e.g., filesystem scans)
     allow_no_repo = bool(args.target_repo)
@@ -1824,6 +1935,16 @@ def main() -> int:
             logging.info("No findings detected after filtering; no issues created")
         else:
             logging.info("No verified findings detected after filtering; no issues created")
+        # Still write summary when there are no actionable findings
+        if os.path.exists(args.ndjson) and args.write_summary:
+            try:
+                write_markdown_summary(args.ndjson, args.org, exclude_regexes,
+                    include_detailed=args.summary_detailed,
+                    detailed_per_repo=max(1, args.summary_detailed_per_repo),
+                    detailed_max_total=max(1, args.summary_detailed_max),
+                    errors_path=args.errors_ndjson, target_repo=args.target_repo)
+            except Exception as se:
+                logging.warning("Summary generation failed: %s", se)
         return 0
 
     app_id = os.environ.get('GH_APP_ID', '')
@@ -1844,21 +1965,53 @@ def main() -> int:
         logging.info("Using target-repo override: %s (consolidated %d findings)", args.target_repo, len(all_items))
 
     created_count = 0
+    skipped_count = 0
+    failed_repos: List[str] = []
     with cf.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="issue") as pool:
-        futures = []
+        futures = {}
         for repo, items in findings.items():
-            futures.append(pool.submit(
+            fut = pool.submit(
                 process_repo, repo, items, gh, args.title_prefix, args.run_url, extra_labels, args.dry_run, args.scanner_repo, args.force_create
-            ))
+            )
+            futures[fut] = repo
         for fut in cf.as_completed(futures):
             try:
-                repo, created = fut.result()
-                if created:
+                repo, result = fut.result()
+                if result is True:
                     created_count += 1
+                elif result is None:
+                    skipped_count += 1
+                else:
+                    failed_repos.append(repo)
             except Exception as e:
-                logging.error("Worker failed: %s", e)
+                failed_repos.append(futures[fut])
+                logging.error("Worker failed for %s: %s", futures[fut], e)
 
-    logging.info("Issues created: %d", created_count)
+    logging.info("Issues created: %d, skipped/deduped: %d, failed: %d", created_count, skipped_count, len(failed_repos))
+
+    # Write summary AFTER issue creation so we can report actual results
+    if os.path.exists(args.ndjson) and args.write_summary:
+        try:
+            write_markdown_summary(
+                args.ndjson,
+                args.org,
+                exclude_regexes,
+                include_detailed=args.summary_detailed,
+                detailed_per_repo=max(1, args.summary_detailed_per_repo),
+                detailed_max_total=max(1, args.summary_detailed_max),
+                errors_path=args.errors_ndjson,
+                target_repo=args.target_repo,
+                created_count=created_count if not args.dry_run else None,
+                skipped_count=skipped_count if not args.dry_run else None,
+                failed_repos=failed_repos if not args.dry_run else None,
+            )
+        except Exception as e:
+            logging.warning("Summary generation failed: %s", e)
+
+    # Exit non-zero if any issue creation failed (so the workflow step fails)
+    if failed_repos and not args.dry_run:
+        logging.error("Issue creation failed for %d repo(s): %s", len(failed_repos), ", ".join(failed_repos))
+        return 2
     return 0
 
 def _secure_entrypoint():

@@ -65,6 +65,19 @@ Performance optimization and issue resolution guide.
 
 ## Common Issues
 
+**Summary says "issues created" but no issues exist**
+- Most likely cause: `DEFAULT_OPEN_ISSUES` variable is not set to `true`
+- On scheduled (cron) runs, the `open_issues` input is not set, so the workflow falls through to `DEFAULT_OPEN_ISSUES`
+- If that variable is unset or anything other than exactly `true`, all scans run in `--dry-run` mode
+- Fix: Set `DEFAULT_OPEN_ISSUES` to `true` in Settings > Secrets and variables > Actions > Variables
+- See [SETUP.md](SETUP.md#enable-issue-creation-for-scheduled-scans) for details
+
+**Scanner exits with code 2**
+- This means issue creation failed for one or more repos
+- Check the workflow logs for "Issue creation failed for N repo(s)" and the specific repos listed
+- Common causes: token permissions (missing `issues: write`), rate limiting, repo access denied
+- The scanner now verifies every created issue with a GET-back check -- if the issue doesn't exist after the POST, the repo is marked as failed
+
 **No findings but artifacts exist**
 - Check stderr logs: `tmp-logs-<org>/*.stderr.log`
 - Verify false positive patterns aren't too broad

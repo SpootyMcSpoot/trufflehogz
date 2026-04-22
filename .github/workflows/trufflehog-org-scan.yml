@@ -105,6 +105,9 @@ env:
 jobs:
   resolve-matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       orgs_json: ${{ steps.set-matrix.outputs.orgs_json }}
     env:
@@ -133,21 +136,21 @@ jobs:
 
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     needs: [resolve-matrix]
     outputs:
       tasks_json: ${{ steps.build.outputs.tasks_json }}
-      orgs_json:  ${{ needs.resolve-matrix.outputs.orgs_json }}
+      orgs_json: ${{ needs.resolve-matrix.outputs.orgs_json }}
       total_repos: ${{ steps.build.outputs.total_repos }}
       total_shards: ${{ steps.build.outputs.total_shards }}
       org_notes: ${{ steps.build.outputs.org_notes }}
     env:
       # GitHub App credentials (preferred)
       GH_APP_ID: ${{ vars.GH_APP_ID }}
-      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
       GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
-      # Fallback to PAT
-      GH_PAT: ${{ secrets.GH_PAT }}
-      API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
+      API: ${{ vars.GH_API_URL || 'https://api.github.com' }}
       SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
       REPOS_PER_SHARD: ${{ vars.REPOS_PER_SHARD || '50' }}
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
@@ -156,6 +159,8 @@ jobs:
         shell: bash
         env:
           ORGS_JSON: ${{ needs.resolve-matrix.outputs.orgs_json }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -Eeuo pipefail
           mapfile -t ORGS < <(jq -r '.org[]' <<< "${ORGS_JSON}")
@@ -256,15 +261,20 @@ jobs:
             echo "::endgroup::"
           done
 
-          echo "tasks_json=${TASKS}" >> "$GITHUB_OUTPUT"
-          echo "total_repos=${TOTAL_REPOS_ALL}" >> "$GITHUB_OUTPUT"
-          echo "total_shards=${TOTAL_SHARDS_ALL}" >> "$GITHUB_OUTPUT"
-          echo "org_notes=${ORG_NOTES}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tasks_json=${TASKS}"
+            echo "total_repos=${TOTAL_REPOS_ALL}"
+            echo "total_shards=${TOTAL_SHARDS_ALL}"
+            echo "org_notes=${ORG_NOTES}"
+          } >> "$GITHUB_OUTPUT"
           echo "Tasks matrix: ${TASKS}"
           echo "::notice title=Scan Plan::Non-public repos: ${TOTAL_REPOS_ALL}, Total shards: ${TOTAL_SHARDS_ALL}"
 
   scan-org:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
     needs: [plan]
     strategy:
       fail-fast: false
@@ -273,9 +283,8 @@ jobs:
     name: Scan ${{ matrix.org }} [shard ${{ matrix.index1 }}/${{ matrix.shard_total }}]
     env:
       ORG: ${{ matrix.org }}
-      GH_PAT: ${{ secrets.GH_PAT }}
-      RUN_URL: ${{ github.run_url }}
-      API: ${{ vars.GITHUB_API || 'https://api.github.com' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      API: ${{ vars.GH_API_URL || 'https://api.github.com' }}
       SCAN_HISTORY: ${{ vars.SCAN_HISTORY || 'true' }}
       ALL_HEADS: ${{ vars.ALL_HEADS || 'true' }}
       PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || vars.PER_REPO_TIMEOUT || '10m' }}
@@ -285,7 +294,7 @@ jobs:
       ALLOW_VER_OVERLAP: ${{ vars.ALLOW_VER_OVERLAP || 'true' }}
       EXCLUDE_GENERIC: ${{ vars.EXCLUDE_GENERIC || 'false' }}
       MAX_FINDING_LOG_LINES: ${{ vars.MAX_FINDING_LOG_LINES || '300' }}
-      OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
+      OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || 'true' }}
       TRUFFLEHOG_DISABLE_UPDATER: ${{ vars.TRUFFLEHOG_DISABLE_UPDATER || '1' }}
       SHARD_INDEX: ${{ matrix.index }}
       SHARD_INDEX1: ${{ matrix.index1 }}
@@ -324,7 +333,7 @@ jobs:
 
       - name: Prime/restore TruffleHog image cache
         if: ${{ matrix.will_warn != true }}
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ${{ env.TRUFFLEHOG_CACHE_FILE }}
           key: trufflehog-image-${{ env.TRUFFLEHOG_VERSION }}
@@ -346,7 +355,8 @@ jobs:
         if: ${{ matrix.will_warn != true }}
         shell: bash
         env:
-          GH_AUTH: "Bearer ${{ env.GH_PAT }}"
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_AUTH: "Bearer ${{ secrets.GH_PAT }}"
         run: |
           set -Eeuo pipefail
           # E5: Single pagination loop captures both repo names AND sizes
@@ -421,6 +431,8 @@ jobs:
       - name: Scan repos with TruffleHog (git, all branches/history)
         if: ${{ matrix.will_warn != true && hashFiles(format('repos-{0}-shard-{1}-of-{2}.txt', env.ORG, env.SHARD_INDEX1, env.SHARD_TOTAL)) != '' }}
         shell: bash
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -Eeuo pipefail
           export GIT_TERMINAL_PROMPT=0
@@ -534,7 +546,8 @@ jobs:
             local REPO_URL="https://${GH_PAT}:x-oauth-basic@github.com/${full}.git"
 
             # Calculate timeout for this repo
-            local timeout=$(calc_timeout "${repo_size}")
+            local timeout
+            timeout=$(calc_timeout "${repo_size}")
 
             echo "[${ORG}] scanning ${full} (size: ${repo_size}KB, timeout: ${timeout}, mode: ${SCAN_MODE})"
 
@@ -596,11 +609,13 @@ jobs:
 
           : > "findings-${ORG}.ndjson"
           if compgen -G "tmp-findings-${ORG}/*.ndjson" > /dev/null; then
-            LC_ALL=C ls -1 "tmp-findings-${ORG}"/*.ndjson | while read -r f; do cat "$f"; done >> "findings-${ORG}.ndjson"
+            find "tmp-findings-${ORG}" -maxdepth 1 -name '*.ndjson' -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' f; do cat "$f"; done >> "findings-${ORG}.ndjson"
           fi
 
           : > "errors-${ORG}.ndjson"
-          [ -f "tmp-errors-${ORG}/errors.ndjson" ] && cat "tmp-errors-${ORG}/errors.ndjson" >> "errors-${ORG}.ndjson" || true
+          if [ -f "tmp-errors-${ORG}/errors.ndjson" ]; then
+            cat "tmp-errors-${ORG}/errors.ndjson" >> "errors-${ORG}.ndjson"
+          fi
 
           total_files=$(find "tmp-findings-${ORG}" -name '*.ndjson' | wc -l || echo 0)
           non_empty=$(find "tmp-findings-${ORG}" -name '*.ndjson' -size +0c | wc -l || echo 0)
@@ -610,7 +625,7 @@ jobs:
           echo "[${ORG}] merged error lines: $(wc -l < "errors-${ORG}.ndjson" || echo 0)"
 
           : > "diag-${ORG}/SCAN_SUMMARY.txt"
-          for f in tmp-findings-${ORG}/*.ndjson; do
+          for f in "tmp-findings-${ORG}"/*.ndjson; do
             [ -e "$f" ] || continue
             base="$(basename "${f%.ndjson}")"; repo="${base//__/\/}"
             count="$(wc -l < "$f" || echo 0)"; errf="tmp-logs-${ORG}/${base}.stderr.log"
@@ -628,7 +643,7 @@ jobs:
           [ -f "diag-${ORG}/SCAN_SUMMARY.txt" ] || : > "diag-${ORG}/SCAN_SUMMARY.txt"
 
       - name: Upload per-shard artifacts (findings/errors)
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trufflehog-findings-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -638,7 +653,7 @@ jobs:
           compression-level: 6
 
       - name: Upload per-shard troubleshoot bundle (curated)
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trufflehog-troubleshoot-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -649,6 +664,10 @@ jobs:
 
   summarize-org:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
     needs: [plan, scan-org]
     strategy:
       fail-fast: false
@@ -657,14 +676,10 @@ jobs:
     name: summarize-org (${{ matrix.org }})
     env:
       ORG: ${{ matrix.org }}
-      # GitHub App credentials (preferred)
       GH_APP_ID: ${{ vars.GH_APP_ID }}
-      GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
       GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
-      # Fallback to PAT
-      GH_PAT: ${{ secrets.GH_PAT }}
-      RUN_URL: ${{ github.run_url }}
-      OPEN_ISSUES: ${{ inputs.open_issues }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || 'true' }}
       INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
       VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
     steps:
@@ -678,7 +693,7 @@ jobs:
           pip install PyJWT cryptography
 
       - name: Download shard artifacts for org
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3  # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: trufflehog-findings-${{ env.ORG }}-shard-*-of-*
           path: merge/${{ env.ORG }}
@@ -694,13 +709,16 @@ jobs:
           [ -d "$ROOT" ] || { echo "No shard artifacts found for ${ORG}"; exit 0; }
           : > "findings-${ORG}-ALL.ndjson"
           : > "errors-${ORG}-ALL.ndjson"
-          find "$ROOT" -type f -name 'findings-*.ndjson' -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "findings-'${ORG}'-ALL.ndjson"' || true
-          find "$ROOT" -type f -name 'errors-*.ndjson'   -print0 | xargs -0 -I{} bash -c 'cat "{}" >> "errors-'${ORG}'-ALL.ndjson"'   || true
+          find "$ROOT" -type f -name 'findings-*.ndjson' -exec cat {} + >> "findings-${ORG}-ALL.ndjson" || true
+          find "$ROOT" -type f -name 'errors-*.ndjson'   -exec cat {} + >> "errors-${ORG}-ALL.ndjson"   || true
           echo "Merged findings lines: $(wc -l < "findings-${ORG}-ALL.ndjson" || echo 0)"
           echo "Merged errors   lines: $(wc -l < "errors-${ORG}-ALL.ndjson" || echo 0)"
 
       - name: Summarize (verified-unique) and optionally open issues
         shell: bash
+        env:
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           set -Eeuo pipefail
           if [ ! -s "findings-${ORG}-ALL.ndjson" ]; then
@@ -755,6 +773,53 @@ jobs:
             --log-level INFO \
             ${DRY}
 
+      - name: Validate issue creation (post-check)
+        if: env.OPEN_ISSUES == 'true'
+        shell: bash
+        env:
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GH_APP_INSTALLATION_ID: ${{ vars.GH_APP_INSTALLATION_ID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          set -Eeuo pipefail
+          NDJSON="findings-${ORG}-ALL.ndjson"
+          if [ ! -s "$NDJSON" ]; then
+            echo "[${ORG}] No findings file -- nothing to validate."
+            exit 0
+          fi
+
+          # Count verified findings from NDJSON
+          VERIFIED_COUNT=$(python3 -c "
+          import json, sys
+          count = 0
+          with open('$NDJSON') as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      obj = json.loads(line)
+                      if obj.get('Verified') is True:
+                          count += 1
+                  except Exception:
+                      pass
+          print(count)
+          ")
+
+          if [ "$VERIFIED_COUNT" -eq 0 ]; then
+            echo "[${ORG}] No verified findings -- nothing to validate."
+            exit 0
+          fi
+
+          echo "[${ORG}] Verified findings in NDJSON: ${VERIFIED_COUNT}"
+
+          # Check logs for issue creation results
+          echo "::notice title=Post-check::Verified findings: ${VERIFIED_COUNT} for org ${ORG}. Review the scanner logs above for 'Issues created' and 'failed' counts."
+
+          # If scanner exited with code 2, it means issue creation had failures
+          # (This is checked by the next step's exit code handling)
+
       # Keep: 401 is hard-fail. 403 is only a warning in the summary.
       - name: Fail job if any 401 auth errors were observed
         shell: bash
@@ -766,7 +831,7 @@ jobs:
           fi
 
       - name: Upload merged artifacts (per-org)
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trufflehog-findings-${{ env.ORG }}-ALL
           path: |
@@ -777,6 +842,9 @@ jobs:
 
   workflow-summary:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     needs: [plan, summarize-org]
     if: always()
     steps:
@@ -787,7 +855,7 @@ jobs:
           TOTAL_SHARDS: ${{ needs.plan.outputs.total_shards }}
           ORGS_JSON: ${{ needs.plan.outputs.orgs_json }}
           ORG_NOTES: ${{ needs.plan.outputs.org_notes }}
-          OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || false }}
+          OPEN_ISSUES: ${{ inputs.open_issues || vars.DEFAULT_OPEN_ISSUES || 'true' }}
           SCAN_PAR: ${{ vars.SCAN_PAR || '8' }}
           PER_REPO_TIMEOUT: ${{ inputs.per_repo_timeout || vars.PER_REPO_TIMEOUT || '10m' }}
           SHARD_CAP: ${{ vars.SHARD_CAP || '10' }}
@@ -853,7 +921,7 @@ jobs:
             fi
             echo "## Status"
             echo "- Scan completed: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "- Workflow run: ${{ github.run_url }}"
+            echo "- Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo ""
             echo "> Per-organization detailed findings are shown in the summaries above."
           } >> "$GITHUB_STEP_SUMMARY"

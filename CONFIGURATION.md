@@ -59,8 +59,9 @@ Override defaults via **Settings → Secrets and variables → Actions → Varia
 | `TRUFFLEHOG_VERSION` | `3.92.5` | TruffleHog version |
 | `SIZE_BASED_SHARDING` | `false` | Use size-based shard assignment |
 | `MAX_REPO_SIZE_KB` | `0` (unlimited) | Skip repos exceeding this size |
+| `DEFAULT_OPEN_ISSUES` | `false` | Create issues on scheduled runs (must be `true` for cron-triggered scans to create issues) |
 
-See [README.md — Repository Variables](README.md#repository-variables) for the complete list.
+See [README.md -- Repository Variables](README.md#repository-variables) for the complete list.
 
 ## Configuration Examples
 

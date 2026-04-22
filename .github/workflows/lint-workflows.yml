@@ -1,5 +1,4 @@
 # Workflow Linting — validates all .github/workflows/*.yml on every PR
-# Adapted from slac-templates/lint-workflows.yml
 # Uses actionlint for syntax/type/expression checks and ghalint for
 # security-policy enforcement (permissions, SHA pinning, timeout, etc.)
 
@@ -23,6 +22,8 @@ jobs:
     name: actionlint
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -47,6 +48,8 @@ jobs:
     name: ghalint (security policies)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -57,8 +60,9 @@ jobs:
         run: |
           set -euo pipefail
           GHALINT_VERSION="v1.5.5"
-          curl -sSLo /usr/local/bin/ghalint \
-            "https://github.com/suzuki-shunsuke/ghalint/releases/download/${GHALINT_VERSION}/ghalint_linux_amd64"
+          curl -sSL \
+            "https://github.com/suzuki-shunsuke/ghalint/releases/download/${GHALINT_VERSION}/ghalint_${GHALINT_VERSION#v}_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin ghalint
           chmod +x /usr/local/bin/ghalint
           echo "ghalint ${GHALINT_VERSION} installed"
 

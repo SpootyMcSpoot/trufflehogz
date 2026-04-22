@@ -263,7 +263,7 @@ If you discover what appears to be a **real** secret (not listed here as test da
 
 ---
 
-**Last Updated**: 2025-07-16
+**Last Updated**: 2026-04-16
 **Maintained By**: TruffleHogz Contributors
 
 ## References

@@ -1,5 +1,4 @@
-# Semgrep SAST — replaces CodeQL default setup
-# Calls the reusable Semgrep workflow from slac-templates
+# Semgrep SAST -- scans source code for security vulnerabilities and anti-patterns
 name: Semgrep SAST
 
 on:
@@ -16,9 +15,124 @@ permissions:
 
 jobs:
   semgrep:
-    uses: slac-it/slac-templates/.github/workflows/semgrep-sast.yml@main
-    with:
-      config: "auto"
-      severity: "WARNING"
-      fail_on_findings: false
-      exclude_paths: "test/fixtures"
+    name: Semgrep SAST Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Semgrep
+        run: pip install --quiet semgrep
+
+      - name: Run Semgrep scan
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARGS=(scan --config "auto")
+          ARGS+=(--json --output semgrep-results.json)
+          ARGS+=(--severity "WARNING")
+          ARGS+=(--exclude "test/fixtures")
+          ARGS+=(.)
+
+          echo "Running: semgrep ${ARGS[*]}"
+          semgrep "${ARGS[@]}"
+
+      # Parse JSON report, count findings by severity, build job summary,
+      # and decide pass/fail. Runs on always() so we still get a summary
+      # even if the scan step exits non-zero.
+      - name: Evaluate results and generate summary
+        id: evaluate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="semgrep-results.json"
+          if [ ! -f "$REPORT" ]; then
+            echo "::warning::No Semgrep results file found -- scan may have produced no output."
+            REPORT=""
+          fi
+
+          FINDINGS=0
+          ERROR_COUNT=0
+          WARNING_COUNT=0
+          INFO_COUNT=0
+
+          if [ -n "$REPORT" ]; then
+            echo "Found report: ${REPORT}"
+            FINDINGS=$(jq '.results | length' "$REPORT" 2>/dev/null || echo "0")
+            ERROR_COUNT=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' "$REPORT" 2>/dev/null || echo "0")
+            WARNING_COUNT=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' "$REPORT" 2>/dev/null || echo "0")
+            INFO_COUNT=$(jq '[.results[] | select(.extra.severity == "INFO")] | length' "$REPORT" 2>/dev/null || echo "0")
+          fi
+
+          {
+            echo "## Semgrep SAST Scan Results"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Config** | \`auto\` |"
+            echo "| **Severity threshold** | \`WARNING\` |"
+            echo "| **Total findings** | \`${FINDINGS}\` |"
+            echo ""
+
+            if [ "${FINDINGS}" -gt 0 ]; then
+              echo "### Severity Breakdown"
+              echo ""
+              echo "| Severity | Count |"
+              echo "|----------|------:|"
+              echo "| Error | ${ERROR_COUNT} |"
+              echo "| Warning | ${WARNING_COUNT} |"
+              echo "| Info | ${INFO_COUNT} |"
+              echo ""
+
+              echo "### Findings Detail"
+              echo ""
+              echo "<details><summary>Show ${FINDINGS} finding(s)</summary>"
+              echo ""
+              echo "| # | Severity | Rule | File | Line | Message |"
+              echo "|--:|----------|------|------|-----:|---------|"
+
+              jq -r '
+                    .results |
+                    to_entries[] |
+                    select(.key < 25) |
+                    "| \(.key + 1) | \(.value.extra.severity // "unknown") | `\(.value.check_id // "n/a" | split(".") | last)` | \(.value.path // "n/a") | \(.value.start.line // "-") | \(.value.extra.message // "n/a" | gsub("[\\n\\r]"; " ") | if length > 80 then .[0:80] + "…" else . end) |"
+                  ' "$REPORT" 2>/dev/null || echo "| - | - | Unable to parse results | - | - | - |"
+
+              if [ "${FINDINGS}" -gt 25 ]; then
+                echo ""
+                echo "_Showing first 25 of ${FINDINGS} findings. Run locally with \`semgrep scan --config auto\` for full results._"
+              fi
+
+              echo ""
+              echo "</details>"
+            else
+              echo "### No findings detected"
+              echo ""
+              echo "Semgrep scan completed successfully with no issues found."
+            fi
+
+            echo ""
+            echo "---"
+            echo "_Scan powered by [Semgrep](https://semgrep.dev) -- Config: \`auto\`_"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${FINDINGS}" -gt 0 ]; then
+            echo "::warning::Semgrep found ${FINDINGS} finding(s) -- ERROR: ${ERROR_COUNT}, WARNING: ${WARNING_COUNT}, INFO: ${INFO_COUNT}"
+          else
+            echo "Semgrep scan passed with no findings"
+          fi

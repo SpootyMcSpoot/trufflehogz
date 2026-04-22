@@ -678,7 +678,8 @@ class TestProcessRepo:
     @mock.patch.object(GHClient, 'get_suppressed_hashes')
     @mock.patch.object(GHClient, 'process_comment_commands')
     @mock.patch.object(GHClient, 'create_suppression_labels')
-    def test_process_repo_creates_issue(self, mock_supp_labels, mock_comments, mock_suppressed,
+    @mock.patch.object(GHClient, 'verify_issue_exists')
+    def test_process_repo_creates_issue(self, mock_verify, mock_supp_labels, mock_comments, mock_suppressed,
                                          mock_labels, mock_create, mock_hash_search, 
                                          mock_title_search, mock_meta, mock_for_org):
         """Test that process_repo creates an issue when none exists."""
@@ -690,6 +691,7 @@ class TestProcessRepo:
         mock_suppressed.return_value = set()
         mock_comments.return_value = 0
         mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/1", "number": 1}
+        mock_verify.return_value = True
         mock_labels.return_value = None
         mock_supp_labels.return_value = None
 
@@ -744,7 +746,7 @@ class TestProcessRepo:
         )
         
         assert repo == "owner/repo"
-        assert created is False
+        assert created is None
 
     @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
@@ -755,7 +757,8 @@ class TestProcessRepo:
     @mock.patch.object(GHClient, 'get_suppressed_hashes')
     @mock.patch.object(GHClient, 'process_comment_commands')
     @mock.patch.object(GHClient, 'create_suppression_labels')
-    def test_process_repo_force_create_bypasses_dedup(self, mock_supp_labels, mock_comments, mock_suppressed,
+    @mock.patch.object(GHClient, 'verify_issue_exists')
+    def test_process_repo_force_create_bypasses_dedup(self, mock_verify, mock_supp_labels, mock_comments, mock_suppressed,
                                                         mock_labels, mock_create, 
                                                         mock_hash_search, mock_title_search, mock_meta, mock_for_org):
         """Test that force_create=True bypasses deduplication checks."""
@@ -765,6 +768,7 @@ class TestProcessRepo:
         mock_title_search.return_value = True  # Issue would normally exist
         mock_hash_search.return_value = True   # Hash would normally match
         mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/2", "number": 2}
+        mock_verify.return_value = True
         mock_labels.return_value = None
         mock_suppressed.return_value = set()
         mock_comments.return_value = 0
@@ -816,7 +820,7 @@ class TestProcessRepo:
         )
         
         assert repo == "owner/repo"
-        assert created is False
+        assert created is None
 
 
 class TestMultiOrgAuth:
@@ -844,9 +848,9 @@ class TestMultiOrgAuth:
 
         client = GHClient(token="default-token", dry_run=False,
                           app_id="12345", app_private_key="fake-key")
-        result = client.for_org("SLAC")
+        result = client.for_org("test-org")
 
-        mock_get_install.assert_called_once_with("SLAC")
+        mock_get_install.assert_called_once_with("test-org")
         mock_get_token.assert_called_once_with("12345", "fake-key", "99999")
         assert result.token == "ghs_org_scoped_token"
         assert result is not client  # Should be a new client
@@ -860,8 +864,8 @@ class TestMultiOrgAuth:
 
         client = GHClient(token="default-token", dry_run=False,
                           app_id="12345", app_private_key="fake-key")
-        result1 = client.for_org("SLAC")
-        result2 = client.for_org("SLAC")
+        result1 = client.for_org("test-org")
+        result2 = client.for_org("test-org")
 
         # Should only call the API once (cached on second call)
         mock_get_install.assert_called_once()
@@ -1161,10 +1165,10 @@ class TestBuildIssueBody:
         """Items with original_repo='_filesystem_' should use the issue repo for links."""
         items = [{"detector": "AWS", "file": "/repo/secrets.txt", "line": 3, "commit": None,
                   "verified": False, "original_repo": "_filesystem_"}]
-        body = build_issue_body("slac-it/trufflehog", items, "https://github.com/runs/1")
+        body = build_issue_body("owner/test-repo", items, "https://github.com/runs/1")
         assert "_filesystem_" not in body
-        assert "slac-it/trufflehog" in body
-        assert "[Blame](https://github.com/slac-it/trufflehog/blame/HEAD/secrets.txt#L3)" in body
+        assert "owner/test-repo" in body
+        assert "[Blame](https://github.com/owner/test-repo/blame/HEAD/secrets.txt#L3)" in body
 
 
 class TestWriteMarkdownSummary:
@@ -1318,14 +1322,14 @@ class TestWriteMarkdownSummary:
         summary_file.close()
         try:
             with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
-                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="slac-it/trufflehog")
+                write_markdown_summary(ndjson_path, "self-scan", [], target_repo="owner/test-repo")
             with open(summary_file.name) as f:
                 content = f.read()
             # All 3 findings should be counted
             assert "**3**" in content
             assert "Unverified (informational) | **3**" in content
             # The target repo should be used as the repo name
-            assert "slac-it/trufflehog" in content
+            assert "owner/test-repo" in content
             # Detectors should appear
             assert "Postgres" in content
             assert "AWS" in content
@@ -1359,6 +1363,108 @@ class TestWriteMarkdownSummary:
         obj = {"SourceMetadata": {"Data": {"Filesystem": {"file": "/repo/test.py", "line": 42}}}}
         assert file_path(obj) == "/repo/test.py"
         assert line_no(obj) == 42
+
+    def test_skipped_count_shown_in_summary(self):
+        """Summary should show skipped (pre-existing) count when provided."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-b", "file": "b.py"}}}},
+            {"DetectorName": "GitHub", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-c", "file": "c.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [],
+                                       created_count=1, skipped_count=2)
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "Skipped (pre-existing issue) | **2**" in content
+            assert "Issues created | **1**" in content
+            # No "unaccounted" warning: 1 created + 2 skipped = 3 repos = 3 repos with findings
+            assert "unaccounted" not in content.lower()
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_gap_warning_uses_repo_count_not_findings(self):
+        """Gap should compare repos-with-findings vs accounted repos, not finding count vs created."""
+        # 2 repos with 5 verified findings total, but only 1 issue created, 0 skipped
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "a.py", "line": 1}}}},
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "b.py", "line": 2}}}},
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "c.py", "line": 3}}}},
+            {"DetectorName": "Slack", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-b", "file": "d.py", "line": 1}}}},
+            {"DetectorName": "Slack", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-b", "file": "e.py", "line": 2}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [],
+                                       created_count=1, skipped_count=0)
+            with open(summary_file.name) as f:
+                content = f.read()
+            # 2 repos with findings, 1 created, 0 skipped = 1 unaccounted repo
+            assert "Repos unaccounted for | **1**" in content
+            # Old broken metric would have shown gap of 4 (5 findings - 1 created)
+            assert "**4**" not in content or "Verified findings | **5**" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_no_gap_warning_when_all_accounted(self):
+        """No gap warning when created + skipped + failed = repos with findings."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-b", "file": "b.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [],
+                                       created_count=1, skipped_count=1)
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "unaccounted" not in content.lower()
+            assert "gap" not in content.lower()
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
+
+    def test_repos_with_verified_findings_shown(self):
+        """Summary should show the count of repos with verified findings."""
+        ndjson_path = self._write_ndjson([
+            {"DetectorName": "AWS", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-a", "file": "a.py"}}}},
+            {"DetectorName": "Slack", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-b", "file": "b.py"}}}},
+            {"DetectorName": "GitHub", "Verified": True,
+             "SourceMetadata": {"Data": {"Git": {"repository": "org/repo-c", "file": "c.py"}}}},
+        ])
+        summary_file = tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False)
+        summary_file.close()
+        try:
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": summary_file.name}):
+                write_markdown_summary(ndjson_path, "test-org", [],
+                                       created_count=3, skipped_count=0)
+            with open(summary_file.name) as f:
+                content = f.read()
+            assert "Repos with verified findings | **3**" in content
+        finally:
+            os.unlink(ndjson_path)
+            os.unlink(summary_file.name)
 
 
 class TestDetectorRemediationMap:
@@ -1606,7 +1712,7 @@ class TestProcessRepoSuppression:
         )
 
         assert repo == "owner/repo"
-        assert created is False  # Issue should NOT be created
+        assert created is None  # Issue should NOT be created
 
     @mock.patch.object(GHClient, 'for_org')
     @mock.patch.object(GHClient, 'repo_meta')
@@ -1617,7 +1723,8 @@ class TestProcessRepoSuppression:
     @mock.patch.object(GHClient, 'get_suppressed_hashes')
     @mock.patch.object(GHClient, 'process_comment_commands')
     @mock.patch.object(GHClient, 'create_suppression_labels')
-    def test_non_suppressed_hash_allows_issue_creation(self, mock_supp_labels, mock_comments, mock_suppressed,
+    @mock.patch.object(GHClient, 'verify_issue_exists')
+    def test_non_suppressed_hash_allows_issue_creation(self, mock_verify, mock_supp_labels, mock_comments, mock_suppressed,
                                                          mock_labels, mock_create, mock_hash_search,
                                                          mock_title_search, mock_meta, mock_for_org):
         """If the findings hash is NOT suppressed, issue creation proceeds normally."""
@@ -1629,6 +1736,7 @@ class TestProcessRepoSuppression:
         mock_title_search.return_value = False
         mock_hash_search.return_value = False
         mock_create.return_value = {"html_url": "https://github.com/owner/repo/issues/1", "number": 1}
+        mock_verify.return_value = True
         mock_labels.return_value = None
         mock_supp_labels.return_value = None
 
