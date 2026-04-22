@@ -101,6 +101,19 @@ Use `org_names` input when running workflow
 
 **Priority**: `org_names` input > `TRUFFLEHOG_ORGS` variable
 
+### Enable Issue Creation for Scheduled Scans
+
+By default, the `open_issues` input defaults to `false`. When the workflow runs on a cron schedule (not manual dispatch), the input is not set, so it falls through to the `DEFAULT_OPEN_ISSUES` repository variable.
+
+**If you want scheduled scans to create issues, you must set this variable:**
+
+Settings > Secrets and variables > Actions > Variables
+
+- Name: `DEFAULT_OPEN_ISSUES`
+- Value: `true`
+
+Without this, all scheduled scans run in dry-run mode and no issues are created -- even though the summary may show verified findings.
+
 ## False Positive Filtering
 
 Edit `.github/trufflehog/false_positives.txt`:

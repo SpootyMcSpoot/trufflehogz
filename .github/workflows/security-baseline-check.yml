@@ -1,5 +1,4 @@
 # Security Baseline Check — validates all workflows meet minimum security standards
-# Adapted from slac-templates/security-baseline-check.yml for trufflehog repo
 # Checks: permissions, timeouts, SHA-pinning, no hardcoded secrets,
 #          pull_request_target safety, concurrency hints
 
@@ -57,7 +56,9 @@ jobs:
             if grep -q "^permissions:" "$workflow_file"; then
               echo "  [OK] Has permissions defined"
 
-              if grep -E "permissions:.*write-all" "$workflow_file" >/dev/null 2>&1; then
+              # Match actual YAML "permissions: write-all" lines, not grep patterns in scripts
+              WRITE_ALL_PAT='permissions:[[:space:]]+write-all'
+              if grep -E "^${WRITE_ALL_PAT}$" "$workflow_file" >/dev/null 2>&1; then
                 echo "  [ERROR] CRITICAL: Uses 'write-all' permissions (FAIL)"
                 ISSUES=$((ISSUES + 1))
               fi

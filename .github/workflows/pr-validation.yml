@@ -1,5 +1,4 @@
 # PR Validation — comprehensive PR gate for the trufflehog repo
-# Adapted from slac-templates/pr-validation.yml + action-validator.yml
 # Runs: actionlint, yamllint, SHA-pinning enforcement, permissions audit
 # BLOCKS MERGE if any critical validation fails
 
@@ -27,6 +26,8 @@ jobs:
     name: Validate Workflow Syntax (actionlint)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -67,7 +68,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          [ "$FAILED" -gt 0 ] && exit 1 || true
+          if [ "$FAILED" -gt 0 ]; then exit 1; fi
 
   # ============================================================================
   # STAGE 2: YAML Lint
@@ -77,6 +78,8 @@ jobs:
     name: Validate YAML Syntax (yamllint)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -105,9 +108,11 @@ jobs:
           EOF
 
           if yamllint -c /tmp/.yamllint.yml .github/workflows/*.yml 2>&1; then
-            echo "## YAML Syntax Validation" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "✅ All YAML files passed yamllint validation" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## YAML Syntax Validation"
+              echo ""
+              echo "✅ All YAML files passed yamllint validation"
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             {
               echo "## YAML Syntax Validation"
@@ -125,6 +130,8 @@ jobs:
     name: Validate Action Pinning & Trust
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -273,6 +280,8 @@ jobs:
     name: Check Workflow Permissions
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -293,13 +302,16 @@ jobs:
             else
               echo "  [OK] Has permissions defined"
 
-              if grep -q "permissions:.*write-all\|permissions:.*contents:.*write" "$workflow_file"; then
+              # Match actual YAML permission lines, not grep patterns in scripts
+              BROAD_PERMS_PAT='^permissions:[[:space:]]+write-all'
+              WRITE_CONTENTS_PAT='^[[:space:]]+contents:[[:space:]]+write'
+              if grep -qE "${BROAD_PERMS_PAT}|${WRITE_CONTENTS_PAT}" "$workflow_file"; then
                 echo "  [WARNING] Potentially broad permissions detected"
               fi
             fi
 
-            # Check for unpinned actions
-            UNPINNED=$(grep -E "uses:.*@(v[0-9]|main|master|develop)" "$workflow_file" | grep -v "^\s*#" || true)
+            # Check for unpinned actions (only YAML-level uses: lines, not script content)
+            UNPINNED=$(grep -E '^\s+uses:\s+.*@(v[0-9]|main|master|develop)' "$workflow_file" | grep -v '^\s*#' || true)
             if [ -n "$UNPINNED" ]; then
               echo "  [WARNING] Unpinned actions:"
               echo "$UNPINNED" | awk '{print "     " $0}'
@@ -325,6 +337,8 @@ jobs:
     name: Validate Python Syntax
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -341,7 +355,7 @@ jobs:
           set -euo pipefail
           FAILED=0
 
-          for pyfile in $(find . -name '*.py' -not -path './.git/*' -not -path './.venv/*'); do
+          while IFS= read -r -d '' pyfile; do
             echo "Checking: $pyfile"
             if python3 -c "import py_compile; py_compile.compile('$pyfile', doraise=True)" 2>&1; then
               echo "  [OK] Valid"
@@ -349,7 +363,7 @@ jobs:
               echo "  [ERROR] Syntax error"
               FAILED=$((FAILED + 1))
             fi
-          done
+          done < <(find . -name '*.py' -not -path './.git/*' -not -path './.venv/*' -print0)
 
           {
             echo "## Python Syntax Validation"
@@ -361,10 +375,61 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          [ "$FAILED" -gt 0 ] && exit 1 || true
+          if [ "$FAILED" -gt 0 ]; then exit 1; fi
 
   # ============================================================================
-  # STAGE 6: Summary
+  # STAGE 6: Python Tests (pytest)
+  # ============================================================================
+
+  run-tests:
+    name: Run Python Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: |
+          set -euo pipefail
+          python3 -m pytest test_trufflehog_scanner.py -v --tb=short 2>&1 | tee test-results.txt
+          RESULT=${PIPESTATUS[0]}
+
+          # Extract summary line
+          SUMMARY=$(tail -1 test-results.txt)
+
+          {
+            echo "## Python Test Results"
+            echo ""
+            if [ "$RESULT" -eq 0 ]; then
+              echo "✅ $SUMMARY"
+            else
+              echo "❌ $SUMMARY"
+              echo ""
+              echo '```'
+              grep -E '^FAILED|^ERROR|^E ' test-results.txt || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$RESULT"
+
+  # ============================================================================
+  # STAGE 7: Summary
   # ============================================================================
 
   pr-validation-summary:
@@ -375,9 +440,12 @@ jobs:
       - validate-actions
       - check-permissions
       - validate-python
+      - run-tests
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Check all validations
         shell: bash
@@ -394,6 +462,7 @@ jobs:
             echo "| Action Pinning & Trust | ${{ needs.validate-actions.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo "| Workflow Permissions | ${{ needs.check-permissions.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo "| Python Syntax | ${{ needs.validate-python.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
+            echo "| Python Tests (pytest) | ${{ needs.run-tests.result == 'success' && '✅ Pass' || '❌ Fail' }} |"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -416,6 +485,11 @@ jobs:
 
           if [ "${{ needs.validate-python.result }}" != "success" ]; then
             echo "::error::Python syntax validation failed"
+            FAILED=1
+          fi
+
+          if [ "${{ needs.run-tests.result }}" != "success" ]; then
+            echo "::error::Python tests failed"
             FAILED=1
           fi
 
