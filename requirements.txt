@@ -1,5 +1,5 @@
 PyJWT>=2.10.0
-cryptography>=45.0.0
+cryptography>=47.0.0
 
 # Testing
 pytest>=8.0.0
