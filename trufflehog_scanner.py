@@ -371,14 +371,8 @@ def normalize_detector(name: str) -> str:
     for k in DETECTOR_TYPES:
         if k.lower() in n:
             return k
-    if "webhook" in n and "slack" in n:
-        return "SlackWebhook"
     if "pem" in n or "private key" in n:
         return "Private Key"
-    if "ssh" in n:
-        return "SSH"
-    if "jwt" in n:
-        return "JWT"
     return "Generic"
 
 def highest_severity(items: List[Dict[str, Any]]) -> str:
