@@ -1,3 +1,4 @@
+# Weekly dependency patches across all configured ecosystems.
 version: 2
 updates:
 - package-ecosystem: pip
@@ -44,9 +45,9 @@ multi-ecosystem-groups:
   weekly-patches:
     schedule:
       interval: weekly
-      day: saturday
-      time: '22:14'
-      timezone: UTC
+      day: monday
+      time: 09:00
+      timezone: America/Los_Angeles
     open-pull-requests-limit: 1
     commit-message:
       prefix: ci
