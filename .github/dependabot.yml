@@ -12,8 +12,6 @@ updates:
     - version-update:semver-major
     - version-update:semver-minor
 - package-ecosystem: github-actions
-  commit-message:
-    prefix: ci
   directory: /
   multi-ecosystem-group: weekly-patches
   patterns:
@@ -51,3 +49,5 @@ multi-ecosystem-groups:
       time: 09:00
       timezone: America/Los_Angeles
     open-pull-requests-limit: 1
+    commit-message:
+      prefix: ci
