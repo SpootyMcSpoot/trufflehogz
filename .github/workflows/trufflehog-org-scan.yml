@@ -309,7 +309,7 @@ jobs:
       SIZE_BASED_SHARDING: ${{ vars.SIZE_BASED_SHARDING || 'false' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -643,7 +643,7 @@ jobs:
           [ -f "diag-${ORG}/SCAN_SUMMARY.txt" ] || : > "diag-${ORG}/SCAN_SUMMARY.txt"
 
       - name: Upload per-shard artifacts (findings/errors)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: trufflehog-findings-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -653,7 +653,7 @@ jobs:
           compression-level: 6
 
       - name: Upload per-shard troubleshoot bundle (curated)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: trufflehog-troubleshoot-${{ env.ORG }}-shard-${{ env.SHARD_INDEX1 }}-of-${{ env.SHARD_TOTAL }}
           path: |
@@ -683,7 +683,7 @@ jobs:
       INPUT_ISSUES_ORGS: ${{ inputs.issues_creation_orgs }}
       VAR_ISSUES_ORGS: ${{ vars.TRUFFLEHOG_ISSUES_ORGS }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
 
@@ -693,7 +693,7 @@ jobs:
           pip install PyJWT cryptography
 
       - name: Download shard artifacts for org
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: trufflehog-findings-${{ env.ORG }}-shard-*-of-*
           path: merge/${{ env.ORG }}
@@ -831,7 +831,7 @@ jobs:
           fi
 
       - name: Upload merged artifacts (per-org)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: trufflehog-findings-${{ env.ORG }}-ALL
           path: |
